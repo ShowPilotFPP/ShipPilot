@@ -1,0 +1,21 @@
+{
+  "name": "shippilot",
+  "version": "0.1.0",
+  "description": "Tarball-driven release tool for ShowPilot and ShowPilot-plugin",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^11.3.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "tar": "^7.4.3"
+  }
+}
