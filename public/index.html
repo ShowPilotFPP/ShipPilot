@@ -129,7 +129,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.1.3</div>
+      <div class="version">v0.2.0</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -181,6 +181,18 @@
     </div>
 
     <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Repos</h2>
+        <button id="add-repo-btn">Add repo</button>
+      </div>
+      <div id="repos-empty" style="color: var(--text-dim);">No repos yet. Add one to start shipping.</div>
+      <table id="repos-table" class="hidden">
+        <thead><tr><th>Slug</th><th>Remote</th><th>Branch</th><th></th></tr></thead>
+        <tbody id="repos-body"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2>Recent releases</h2>
       <div id="releases-empty" style="color: var(--text-dim);">No releases yet.</div>
       <table id="releases-table" class="hidden">
@@ -189,6 +201,51 @@
       </table>
     </div>
 
+  </div>
+
+  <!-- Add-repo modal. Two-step: form → key + verify -->
+  <div id="repo-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: flex-start; justify-content: center; padding: 60px 20px; overflow-y: auto;">
+    <div class="card" style="max-width: 720px; width: 100%; margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;" id="repo-modal-title">Add repo</h2>
+        <button id="repo-modal-close" class="secondary" style="padding: 4px 10px;">✕</button>
+      </div>
+
+      <!-- Step 1: form -->
+      <div id="repo-step-form">
+        <p style="margin: 0 0 16px; color: var(--text-dim);">
+          Pick a slug (used in <code>.release.json</code>), paste the GitHub SSH URL,
+          and ShipPilot will generate a deploy key for this repo.
+        </p>
+        <label><span>Slug</span><input id="repo-slug" type="text" placeholder="e.g. mywebapp" autocomplete="off"></label>
+        <label><span>GitHub SSH URL</span><input id="repo-remote" type="text" placeholder="git@github.com:Owner/Repo.git" autocomplete="off"></label>
+        <label><span>Branch (default: main)</span><input id="repo-branch" type="text" placeholder="main" autocomplete="off"></label>
+        <div id="repo-form-msg" style="margin-top: 12px;"></div>
+        <div style="margin-top: 16px;">
+          <button id="repo-create-btn">Generate key</button>
+          <button id="repo-cancel-btn" class="secondary">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Step 2: copy key + verify -->
+      <div id="repo-step-key" class="hidden">
+        <div class="msg warn">
+          <strong>Almost done.</strong> Paste this public key as a deploy key on the GitHub repo
+          (Settings → Deploy keys → Add deploy key) — and check
+          <strong>Allow write access</strong>. Then click Test connection.
+        </div>
+        <label><span>Public key</span></label>
+        <textarea id="repo-pubkey" readonly rows="3" style="width: 100%; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font: inherit; font-family: var(--mono); font-size: 12px; resize: vertical;"></textarea>
+        <div style="margin-top: 8px;">
+          <button id="repo-copy-btn" class="secondary">Copy to clipboard</button>
+        </div>
+        <div id="repo-test-msg" style="margin-top: 16px;"></div>
+        <div style="margin-top: 16px;">
+          <button id="repo-test-btn">Test connection</button>
+          <button id="repo-done-btn" class="secondary">Done</button>
+        </div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -238,6 +295,7 @@ async function bootstrap() {
     show($('who'));
     $('who').innerHTML = `Signed in <button class="secondary" id="logout">Sign out</button>`;
     $('logout').onclick = doLogout;
+    refreshRepos();
     refreshReleases();
     return;
   }
@@ -367,6 +425,141 @@ async function refreshReleases() {
   });
 }
 
+// ---- Repos table + modal ----
+
+async function refreshRepos() {
+  const r = await api('/repos');
+  if (!r.ok) return;
+  const rows = r.body.repos || [];
+  if (rows.length === 0) { show($('repos-empty')); hide($('repos-table')); return; }
+  hide($('repos-empty')); show($('repos-table'));
+  $('repos-body').innerHTML = rows.map(rep => {
+    const managedLabel = rep.managed ? '' : ' <span class="sha" title="Set up manually before ShipPilot v0.2 — keys are not managed">(manual)</span>';
+    return `<tr>
+      <td><strong>${escapeHtml(rep.slug)}</strong>${managedLabel}</td>
+      <td><span class="sha">${escapeHtml(rep.remote)}</span></td>
+      <td>${escapeHtml(rep.branch)}</td>
+      <td style="text-align: right;">
+        <button class="secondary" data-action="test" data-slug="${escapeHtml(rep.slug)}">Test</button>
+        <button class="secondary" data-action="key" data-slug="${escapeHtml(rep.slug)}" ${rep.managed ? '' : 'disabled title="Manual repos have no managed key"'}>Key</button>
+        <button class="secondary" data-action="delete" data-slug="${escapeHtml(rep.slug)}">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  $('repos-body').querySelectorAll('button[data-action]').forEach(btn => {
+    btn.onclick = () => handleRepoAction(btn.getAttribute('data-action'), btn.getAttribute('data-slug'));
+  });
+}
+
+async function handleRepoAction(action, slug) {
+  if (action === 'test') {
+    setMsg($('ship-msg'), '', '');
+    $('ship-msg').innerHTML = `<div class="msg info">Testing connection to ${escapeHtml(slug)}…</div>`;
+    const r = await api(`/repos/${encodeURIComponent(slug)}/test`, { method: 'POST' });
+    if (r.body && r.body.ok) {
+      setMsg($('ship-msg'), 'ok', `${slug}: ${r.body.message}`);
+    } else {
+      setMsg($('ship-msg'), 'err', `${slug}: ${(r.body && r.body.message) || (r.body && r.body.error) || 'Test failed'}`);
+    }
+  } else if (action === 'key') {
+    const r = await api(`/repos/${encodeURIComponent(slug)}/key`);
+    if (r.ok && r.body.publicKey) {
+      openKeyModal(slug, r.body.publicKey);
+    } else {
+      setMsg($('ship-msg'), 'err', (r.body && r.body.error) || 'Could not fetch key');
+    }
+  } else if (action === 'delete') {
+    if (!confirm(`Delete repo "${slug}"? This removes its key, SSH config entry, and cached clone. The GitHub repo itself is not touched.`)) return;
+    const r = await api(`/repos/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    if (r.ok) {
+      setMsg($('ship-msg'), 'ok', `Deleted ${slug}`);
+      refreshRepos();
+    } else {
+      setMsg($('ship-msg'), 'err', (r.body && r.body.error) || 'Delete failed');
+    }
+  }
+}
+
+function openModal() { $('repo-modal').classList.remove('hidden'); $('repo-modal').style.display = 'flex'; }
+function closeModal() { $('repo-modal').classList.add('hidden'); $('repo-modal').style.display = 'none'; resetModal(); }
+function resetModal() {
+  show($('repo-step-form')); hide($('repo-step-key'));
+  $('repo-slug').value = ''; $('repo-remote').value = ''; $('repo-branch').value = '';
+  $('repo-pubkey').value = '';
+  setMsg($('repo-form-msg'), '', ''); setMsg($('repo-test-msg'), '', '');
+  $('repo-modal-title').textContent = 'Add repo';
+  _modalSlug = null;
+}
+
+let _modalSlug = null;
+
+function openKeyModal(slug, publicKey) {
+  // For the "Key" button on existing repos: skip step 1, go straight to step 2.
+  resetModal();
+  hide($('repo-step-form')); show($('repo-step-key'));
+  $('repo-modal-title').textContent = `Deploy key for ${slug}`;
+  $('repo-pubkey').value = publicKey;
+  _modalSlug = slug;
+  openModal();
+}
+
+async function doCreateRepo() {
+  const slug = $('repo-slug').value.trim();
+  const remote = $('repo-remote').value.trim();
+  const branch = $('repo-branch').value.trim() || 'main';
+  setMsg($('repo-form-msg'), '', '');
+  if (!slug || !remote) {
+    setMsg($('repo-form-msg'), 'err', 'Slug and remote are required');
+    return;
+  }
+  $('repo-create-btn').disabled = true;
+  const r = await api('/repos', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ slug, remote, branch }),
+  });
+  $('repo-create-btn').disabled = false;
+  if (!r.ok) {
+    setMsg($('repo-form-msg'), 'err', (r.body && r.body.error) || 'Create failed');
+    return;
+  }
+  // Step 2
+  hide($('repo-step-form')); show($('repo-step-key'));
+  $('repo-modal-title').textContent = `Deploy key for ${slug}`;
+  $('repo-pubkey').value = r.body.publicKey;
+  _modalSlug = slug;
+  refreshRepos();
+}
+
+async function doTestConnection() {
+  if (!_modalSlug) return;
+  setMsg($('repo-test-msg'), '', '');
+  $('repo-test-msg').innerHTML = `<div class="msg info">Testing…</div>`;
+  $('repo-test-btn').disabled = true;
+  const r = await api(`/repos/${encodeURIComponent(_modalSlug)}/test`, { method: 'POST' });
+  $('repo-test-btn').disabled = false;
+  if (r.body && r.body.ok) {
+    setMsg($('repo-test-msg'), 'ok', r.body.message);
+  } else {
+    setMsg($('repo-test-msg'), 'err', (r.body && r.body.message) || (r.body && r.body.error) || 'Test failed');
+  }
+}
+
+async function doCopyKey() {
+  const text = $('repo-pubkey').value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $('repo-copy-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch {
+    // Fallback for non-secure contexts: select the textarea so user can Ctrl-C
+    $('repo-pubkey').select();
+  }
+}
+
 // Theme toggle. The early-paint script in <head> already applied the saved
 // theme; this just keeps the icon in sync and handles clicks.
 function syncThemeIcon() {
@@ -394,6 +587,17 @@ $('ship-btn').onclick = doShip;
 wireDrop();
 [$('login-user'), $('login-pass')].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); }));
 [$('setup-user'), $('setup-pass')].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') doSetup(); }));
+
+// Repo modal buttons
+$('add-repo-btn').onclick = () => { resetModal(); openModal(); };
+$('repo-modal-close').onclick = closeModal;
+$('repo-cancel-btn').onclick = closeModal;
+$('repo-done-btn').onclick = closeModal;
+$('repo-create-btn').onclick = doCreateRepo;
+$('repo-test-btn').onclick = doTestConnection;
+$('repo-copy-btn').onclick = doCopyKey;
+// Backdrop click closes modal
+$('repo-modal').addEventListener('click', (e) => { if (e.target === $('repo-modal')) closeModal(); });
 
 bootstrap();
 </script>

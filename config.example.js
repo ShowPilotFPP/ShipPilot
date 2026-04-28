@@ -18,8 +18,22 @@ module.exports = {
   // boot if these paths don't exist.
   reposDir: './data/repos',
 
-  // Repos this tool manages. The `repo` field in a tarball's .release.json
-  // must match one of these keys.
+  // Where SSH keys for managed repos live. ShipPilot generates a unique
+  // Ed25519 keypair under this directory whenever you add a repo through
+  // the UI. Default: ./data/ssh-keys
+  // sshKeysDir: './data/ssh-keys',
+
+  // ============================================================
+  // DEPRECATED — repos are now managed via the UI and stored in the DB
+  // ============================================================
+  // The `repos` block below is kept for backwards compatibility and as a
+  // first-boot seed. On startup, any entries here that aren't already in
+  // the DB will be imported. After import, you should manage repos
+  // through the web UI (Add/Delete/Test buttons) — that path generates
+  // keys for you and writes the SSH config block automatically.
+  //
+  // For new installs, you can leave this empty: {} — the UI handles
+  // everything.
   repos: {
     showpilot: {
       remote: 'git@github.com:ShowPilotFPP/ShowPilot.git',
