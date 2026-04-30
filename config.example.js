@@ -23,6 +23,17 @@ module.exports = {
   // the UI. Default: ./data/ssh-keys
   // sshKeysDir: './data/ssh-keys',
 
+  // Where SSH keys for managed environments live. Separate from sshKeysDir
+  // so a compromised env key doesn't give GitHub access (and vice versa).
+  // Default: ./data/env-ssh-keys
+  // envSshKeysDir: './data/env-ssh-keys',
+
+  // Where pinned remote host keys live (one file per env). On first
+  // successful Test SSH, the host's key is captured here and from then on
+  // any change to the host key fails the deploy loudly.
+  // Default: ./data/env-known-hosts
+  // envKnownHostsDir: './data/env-known-hosts',
+
   // ============================================================
   // DEPRECATED — repos are now managed via the UI and stored in the DB
   // ============================================================

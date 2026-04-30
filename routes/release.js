@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const db = require('../lib/db');
 const { performRelease } = require('../lib/release');
+const deploy = require('../lib/deploy');
 
 function build(auth, config) {
   const r = express.Router();
@@ -32,7 +33,7 @@ function build(auth, config) {
       fs.unlink(tarballPath).catch(() => {});
     }
 
-    db.recordRelease({
+    const releaseRow = db.recordRelease({
       repo: result.manifest ? result.manifest.repo : 'unknown',
       version: result.manifest ? result.manifest.version : 'unknown',
       tag: result.manifest && result.manifest.tag ? result.manifest.tag : null,
@@ -43,8 +44,38 @@ function build(auth, config) {
       log: result.log,
     });
 
-    if (result.ok) res.json({ ok: true, manifest: result.manifest, commitSha: result.commitSha, log: result.log });
-    else res.status(400).json({ ok: false, error: result.error, log: result.log });
+    // After a successful release, fan out to every auto-deploy env for
+    // this repo. Failures here are recorded but don't fail the release —
+    // the commit is already on GitHub. The user sees deploy results in
+    // the response and can re-run failed envs manually from the UI.
+    let deployResults = [];
+    if (result.ok && result.manifest) {
+      try {
+        deployResults = await deploy.autoDeployForRelease({
+          repoSlug: result.manifest.repo,
+          version: result.manifest.version,
+          tag: result.manifest.tag,
+          releaseId: releaseRow.lastInsertRowid,
+          config,
+        });
+      } catch (e) {
+        // If autoDeployForRelease itself throws (DB error, etc.) we surface
+        // it but still return the release as successful.
+        deployResults = [{ error: e.message }];
+      }
+    }
+
+    if (result.ok) {
+      res.json({
+        ok: true,
+        manifest: result.manifest,
+        commitSha: result.commitSha,
+        log: result.log,
+        deploys: deployResults,
+      });
+    } else {
+      res.status(400).json({ ok: false, error: result.error, log: result.log });
+    }
   });
 
   r.get('/releases', auth.requireAuth, (req, res) => {

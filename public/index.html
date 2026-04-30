@@ -121,6 +121,44 @@
     .grow { flex: 1 1 auto; }
     .hidden { display: none; }
     a, a:visited { color: var(--accent); }
+
+    /* Environment cards. One card per env stacked inside the Environments
+       card, mirroring the visual weight of a row in the Repos table but
+       with more controls per env. */
+    .env { border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 12px; background: var(--panel-2); }
+    .env:last-child { margin-bottom: 0; }
+    .env-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+    .env-name { font-weight: 600; }
+    .env-meta { color: var(--text-dim); font-size: 12px; font-family: var(--mono); }
+    .env-status { font-size: 12px; }
+    .env-status.ok { color: var(--ok); }
+    .env-status.err { color: var(--err); }
+    .env-status.warn { color: var(--warn); }
+    .env-status.unknown { color: var(--text-dim); }
+    .env-actions-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .env-actions-row button { padding: 5px 11px; font-size: 12px; }
+    .env-actions-divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+    .env-tag { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 3px;
+              background: var(--panel); border: 1px solid var(--border); color: var(--text-dim); }
+    .env-tag.auto { color: var(--ok-text); border-color: var(--ok-border); background: var(--ok-soft); }
+    .env-tag.manual-deploy { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-soft); }
+    /* Deploy result block, shown after a release: one mini-row per env. */
+    .deploys { margin-top: 12px; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+    .deploys-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+    .deploys-row + .deploys-row { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
+    .deploy-name { font-weight: 500; }
+    .deploy-detail { color: var(--text-dim); font-family: var(--mono); }
+    textarea {
+      width: 100%; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font: inherit; font-family: var(--mono); font-size: 12px;
+      resize: vertical;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); }
+    select {
+      width: 100%; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font: inherit;
+    }
+    select:focus { outline: none; border-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -129,7 +167,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.2.0</div>
+      <div class="version">v0.3.0</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -193,6 +231,19 @@
     </div>
 
     <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Environments</h2>
+        <button id="add-env-btn">Add environment</button>
+      </div>
+      <p style="margin: 0 0 16px; color: var(--text-dim); font-size: 13px;">
+        Hosts ShipPilot SSHes into to apply updates after a release. Releases auto-deploy
+        to every environment whose repo matches and whose <strong>auto-deploy</strong> is on.
+      </p>
+      <div id="envs-empty" style="color: var(--text-dim);">No environments yet. Add one to enable remote deploys and management.</div>
+      <div id="envs-body"></div>
+    </div>
+
+    <div class="card">
       <h2>Recent releases</h2>
       <div id="releases-empty" style="color: var(--text-dim);">No releases yet.</div>
       <table id="releases-table" class="hidden">
@@ -245,6 +296,146 @@
           <button id="repo-done-btn" class="secondary">Done</button>
         </div>
       </div>
+  <!-- Add/edit environment modal. Two-step like the repo flow:
+       form → key + verify. -->
+  <div id="env-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: flex-start; justify-content: center; padding: 60px 20px; overflow-y: auto;">
+    <div class="card" style="max-width: 720px; width: 100%; margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;" id="env-modal-title">Add environment</h2>
+        <button id="env-modal-close" class="secondary" style="padding: 4px 10px;">✕</button>
+      </div>
+
+      <!-- Step 1: form -->
+      <div id="env-step-form">
+        <p style="margin: 0 0 16px; color: var(--text-dim);">
+          ShipPilot will generate an SSH key for this environment. After saving, you'll
+          paste the public key into the target's <code>~/.ssh/authorized_keys</code> and click Test.
+        </p>
+        <label><span>Slug (used internally; e.g. <code>showpilot-prod</code>)</span><input id="env-slug" type="text" placeholder="e.g. showpilot-prod" autocomplete="off"></label>
+        <label><span>Display name</span><input id="env-name" type="text" placeholder="ShowPilot Prod" autocomplete="off"></label>
+        <div class="row" style="gap: 12px; align-items: stretch;">
+          <label class="grow"><span>Host (IP or DNS)</span><input id="env-host" type="text" placeholder="192.168.1.230" autocomplete="off"></label>
+          <label style="width: 130px;"><span>Port</span><input id="env-port" type="text" placeholder="22" autocomplete="off"></label>
+        </div>
+        <div class="row" style="gap: 12px; align-items: stretch;">
+          <label class="grow"><span>SSH user</span><input id="env-user" type="text" placeholder="root" autocomplete="off"></label>
+          <label class="grow"><span>Repo</span><select id="env-repo"></select></label>
+        </div>
+        <label><span>Deploy path on target (absolute)</span><input id="env-path" type="text" placeholder="/opt/showpilot" autocomplete="off"></label>
+        <label><span>Deploy script (runs after release; receives <code>$RELEASE_TAG</code>, <code>$RELEASE_VERSION</code>, <code>$RELEASE_REPO</code>)</span>
+          <textarea id="env-script" rows="6" placeholder="cd /opt/showpilot
+git fetch --tags
+git reset --hard &quot;$RELEASE_TAG&quot;
+npm install --production
+pm2 restart showpilot"></textarea>
+        </label>
+        <label><span>Log command (used by Tail logs button) <span style="color: var(--text-dim); font-weight: normal;">— optional</span></span><input id="env-log" type="text" placeholder="pm2 logs showpilot --lines 100 --nostream" autocomplete="off"></label>
+        <label><span>Version check command <span style="color: var(--text-dim); font-weight: normal;">— optional, output shown on the env card</span></span><input id="env-vercheck" type="text" placeholder="cat /opt/showpilot/package.json | grep -oP '(?&lt;=&quot;version&quot;: &quot;)[^&quot;]+'" autocomplete="off"></label>
+        <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+          <input id="env-auto" type="checkbox" checked style="width: auto;">
+          <span style="margin: 0;">Auto-deploy when this env's repo is released</span>
+        </label>
+        <div id="env-form-msg" style="margin-top: 12px;"></div>
+        <div style="margin-top: 16px;">
+          <button id="env-create-btn">Generate key</button>
+          <button id="env-cancel-btn" class="secondary">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Step 2: copy key + verify -->
+      <div id="env-step-key" class="hidden">
+        <div class="msg warn">
+          <strong>Almost done.</strong> SSH into <code id="env-key-target"></code> and append this public key to
+          <code>~/.ssh/authorized_keys</code> for the user you configured. Then click Test connection.
+        </div>
+        <label><span>Public key</span></label>
+        <textarea id="env-pubkey" readonly rows="3"></textarea>
+        <div style="margin-top: 8px;">
+          <button id="env-copy-btn" class="secondary">Copy to clipboard</button>
+        </div>
+        <div id="env-test-msg" style="margin-top: 16px;"></div>
+        <div style="margin-top: 16px;">
+          <button id="env-test-btn">Test connection</button>
+          <button id="env-done-btn" class="secondary">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit-environment modal. Subset of fields, reuses #env-modal pattern visually
+       but separate so the create flow doesn't get confused with edit. -->
+  <div id="env-edit-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: flex-start; justify-content: center; padding: 60px 20px; overflow-y: auto;">
+    <div class="card" style="max-width: 720px; width: 100%; margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;">Edit environment</h2>
+        <button id="env-edit-close" class="secondary" style="padding: 4px 10px;">✕</button>
+      </div>
+      <p style="margin: 0 0 16px; color: var(--text-dim);">
+        Slug can't be changed (it's tied to the SSH key file). To change it, delete and re-add.
+      </p>
+      <input id="env-edit-slug" type="hidden">
+      <label><span>Display name</span><input id="env-edit-name" type="text"></label>
+      <div class="row" style="gap: 12px; align-items: stretch;">
+        <label class="grow"><span>Host</span><input id="env-edit-host" type="text"></label>
+        <label style="width: 130px;"><span>Port</span><input id="env-edit-port" type="text"></label>
+      </div>
+      <div class="row" style="gap: 12px; align-items: stretch;">
+        <label class="grow"><span>SSH user</span><input id="env-edit-user" type="text"></label>
+        <label class="grow"><span>Repo</span><select id="env-edit-repo"></select></label>
+      </div>
+      <label><span>Deploy path</span><input id="env-edit-path" type="text"></label>
+      <label><span>Deploy script</span><textarea id="env-edit-script" rows="6"></textarea></label>
+      <label><span>Log command (optional)</span><input id="env-edit-log" type="text"></label>
+      <label><span>Version check command (optional)</span><input id="env-edit-vercheck" type="text"></label>
+      <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+        <input id="env-edit-auto" type="checkbox" style="width: auto;">
+        <span style="margin: 0;">Auto-deploy when this env's repo is released</span>
+      </label>
+      <div id="env-edit-msg" style="margin-top: 12px;"></div>
+      <div style="margin-top: 16px;">
+        <button id="env-edit-save">Save</button>
+        <button id="env-edit-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom action modal: add a custom action to an env. -->
+  <div id="action-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: flex-start; justify-content: center; padding: 60px 20px; overflow-y: auto;">
+    <div class="card" style="max-width: 560px; width: 100%; margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;" id="action-modal-title">Add custom action</h2>
+        <button id="action-modal-close" class="secondary" style="padding: 4px 10px;">✕</button>
+      </div>
+      <p style="margin: 0 0 16px; color: var(--text-dim);">
+        Adds a button to this environment's card. Clicking it runs the command over SSH.
+      </p>
+      <input id="action-env-slug" type="hidden">
+      <label><span>Button label</span><input id="action-label" type="text" placeholder="e.g. Force Reset Now" autocomplete="off"></label>
+      <label><span>Command</span>
+        <textarea id="action-command" rows="3" placeholder="/opt/showpilot-demo/scripts/reset.sh"></textarea>
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+        <input id="action-confirm" type="checkbox" style="width: auto;">
+        <span style="margin: 0;">Ask for confirmation before running</span>
+      </label>
+      <div id="action-msg" style="margin-top: 12px;"></div>
+      <div style="margin-top: 16px;">
+        <button id="action-save-btn">Add</button>
+        <button id="action-cancel-btn" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Output viewer: shows logs from any deploy/action/log-tail. Read-only,
+       large pre block, single Close. Reused for all three. -->
+  <div id="output-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: none; align-items: flex-start; justify-content: center; padding: 60px 20px; overflow-y: auto;">
+    <div class="card" style="max-width: 880px; width: 100%; margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0;" id="output-title">Output</h2>
+        <button id="output-close" class="secondary" style="padding: 4px 10px;">✕</button>
+      </div>
+      <div id="output-status" style="margin-bottom: 8px;"></div>
+      <div id="output-log" class="log"></div>
     </div>
   </div>
 
@@ -296,6 +487,7 @@ async function bootstrap() {
     $('who').innerHTML = `Signed in <button class="secondary" id="logout">Sign out</button>`;
     $('logout').onclick = doLogout;
     refreshRepos();
+    refreshEnvironments();
     refreshReleases();
     return;
   }
@@ -383,6 +575,9 @@ async function doShip() {
   }
   if (r.ok) {
     setMsg($('ship-msg'), 'ok', `Shipped ${r.body.manifest.repo} v${r.body.manifest.version} — ${r.body.commitSha.slice(0,12)}`);
+    // Render auto-deploy results, if any. Each entry is one env that the
+    // backend auto-deployed to. We show status + offer a Log button per env.
+    renderShipDeploys(r.body.deploys || []);
     setPicked(null); $('file').value = '';
   } else {
     setMsg($('ship-msg'), 'err', (r.body && r.body.error) || `Failed (HTTP ${r.status})`);
@@ -390,6 +585,51 @@ async function doShip() {
   $('ship-btn').disabled = !pickedFile;
   $('clear-btn').disabled = !pickedFile;
   refreshReleases();
+  refreshEnvironments();
+}
+
+// Render the per-env deploy summary that comes back with a successful release.
+function renderShipDeploys(deploys) {
+  // Find or create a sibling block under #ship-msg
+  let block = document.getElementById('ship-deploys');
+  if (block) block.remove();
+  if (!deploys || !deploys.length) return;
+  block = document.createElement('div');
+  block.id = 'ship-deploys';
+  block.className = 'deploys';
+  const rows = deploys.map((d) => {
+    if (d.error) {
+      return `<div class="deploys-row"><span class="deploy-name">Auto-deploy</span>
+              <span class="deploy-detail" style="color: var(--err-text);">${escapeHtml(d.error)}</span></div>`;
+    }
+    const status = d.status === 'success' ? 'ok' : 'err';
+    const detail = d.status === 'success'
+      ? `deployed`
+      : escapeHtml(d.error_message || 'failed');
+    const logBtn = d.deploy_id
+      ? `<button class="secondary" data-deploy-id="${d.deploy_id}" style="padding: 2px 8px; font-size: 11px;">Log</button>`
+      : '';
+    return `<div class="deploys-row">
+      <span><span class="deploy-name">${escapeHtml(d.env_name || d.env_slug || '?')}</span>
+            &nbsp; <span class="env-status ${status}">${status === 'ok' ? '✓' : '✗'} ${detail}</span></span>
+      <span>${logBtn}</span>
+    </div>`;
+  }).join('');
+  block.innerHTML = `<div style="font-weight: 500; margin-bottom: 6px;">Auto-deploy results:</div>${rows}`;
+  $('ship-msg').appendChild(block);
+  block.querySelectorAll('button[data-deploy-id]').forEach(btn => {
+    btn.onclick = () => openDeployLog(btn.getAttribute('data-deploy-id'));
+  });
+}
+
+async function openDeployLog(deployId) {
+  $('output-title').textContent = `Deploy log #${deployId}`;
+  $('output-status').innerHTML = '';
+  $('output-log').textContent = 'Loading…';
+  showOutputModal();
+  const resp = await fetch(`${API_BASE}/deploys/${deployId}/log`, { credentials: 'same-origin' });
+  const text = await resp.text();
+  $('output-log').textContent = text || '(empty)';
 }
 
 async function refreshReleases() {
@@ -423,6 +663,427 @@ async function refreshReleases() {
       $('ship-log').scrollIntoView({ behavior: 'smooth' });
     };
   });
+}
+
+// ---- Environments ----
+
+// State: cached repo list (so the env form's Repo dropdown can be populated
+// without an extra round-trip), and the slug currently being shown in the
+// post-create key step.
+let _envCreatedSlug = null;
+
+async function refreshEnvironments() {
+  const r = await api('/environments');
+  if (!r.ok) return;
+  const envs = (r.body && r.body.environments) || [];
+  if (envs.length === 0) { show($('envs-empty')); $('envs-body').innerHTML = ''; return; }
+  hide($('envs-empty'));
+  $('envs-body').innerHTML = envs.map(renderEnvCard).join('');
+  envs.forEach((env) => wireEnvCard(env));
+  // Kick off version probes in parallel for envs that have a version_check_command.
+  // Don't block the render — fill in versions as they arrive.
+  envs.forEach((env) => {
+    if (env.version_check_command) probeAndShowVersion(env.slug);
+  });
+}
+
+function renderEnvCard(env) {
+  const lastDeploy = env.last_deploy;
+  const lastLine = (() => {
+    if (!lastDeploy) return '<span class="env-status unknown">No deploys yet</span>';
+    const cls = lastDeploy.status === 'success' ? 'ok'
+              : lastDeploy.status === 'failed' ? 'err'
+              : 'warn';
+    const what = lastDeploy.trigger === 'action'
+      ? `Last action (${escapeHtml(lastDeploy.action_label || '?')})`
+      : lastDeploy.trigger === 'auto' ? 'Last auto-deploy'
+      : 'Last deploy';
+    const when = lastDeploy.finished_at
+      ? new Date(lastDeploy.finished_at + 'Z').toLocaleString()
+      : new Date(lastDeploy.started_at + 'Z').toLocaleString();
+    const symbol = lastDeploy.status === 'success' ? '✓'
+                  : lastDeploy.status === 'failed' ? '✗' : '⋯';
+    const tail = lastDeploy.status === 'failed' && lastDeploy.error_message
+      ? ` — ${escapeHtml(lastDeploy.error_message)}`
+      : '';
+    return `<span class="env-status ${cls}">${symbol} ${what}: ${escapeHtml(when)}${tail}</span>`;
+  })();
+
+  const verifyBadge = env.host_key_verified
+    ? '<span class="env-tag" title="Host key pinned on first connect">verified</span>'
+    : '<span class="env-tag manual-deploy" title="Run Test SSH to pin the host key">unverified</span>';
+  const autoBadge = env.auto_deploy
+    ? '<span class="env-tag auto" title="Auto-deploys on every successful release of this repo">auto-deploy</span>'
+    : '<span class="env-tag manual-deploy" title="Auto-deploy is off for this env">manual</span>';
+
+  const customActions = (env.actions || []).map((a) => `
+    <button class="secondary" data-env-action="run" data-env-slug="${escapeHtml(env.slug)}" data-action-id="${a.id}" data-confirm="${a.requires_confirmation ? '1' : '0'}" data-action-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>
+    <button class="secondary" data-env-action="del-action" data-env-slug="${escapeHtml(env.slug)}" data-action-id="${a.id}" title="Remove this action" style="padding: 5px 8px;">×</button>
+  `).join('');
+
+  return `
+    <div class="env" data-env-slug="${escapeHtml(env.slug)}">
+      <div class="env-head">
+        <div>
+          <div class="env-name">${escapeHtml(env.name)} ${autoBadge} ${verifyBadge}</div>
+          <div class="env-meta">${escapeHtml(env.ssh_user)}@${escapeHtml(env.host)}:${env.ssh_port} → ${escapeHtml(env.deploy_path)} <span style="opacity: 0.7;">(repo: ${escapeHtml(env.repo_slug)})</span></div>
+          <div class="env-meta" id="env-version-${escapeHtml(env.slug)}">${env.version_check_command ? 'Version: <span style="opacity:0.7;">probing…</span>' : ''}</div>
+          <div style="margin-top: 6px;">${lastLine}</div>
+        </div>
+      </div>
+      <div class="env-actions-row">
+        <button data-env-action="deploy" data-env-slug="${escapeHtml(env.slug)}">Deploy now</button>
+        <button class="secondary" data-env-action="logs" data-env-slug="${escapeHtml(env.slug)}" ${env.log_command ? '' : 'disabled title="Set a log command in Edit to enable this"'}>Tail logs</button>
+        <button class="secondary" data-env-action="test" data-env-slug="${escapeHtml(env.slug)}">Test SSH</button>
+        <button class="secondary" data-env-action="key" data-env-slug="${escapeHtml(env.slug)}">Key</button>
+        <button class="secondary" data-env-action="version" data-env-slug="${escapeHtml(env.slug)}" ${env.version_check_command ? '' : 'disabled title="Set a version check command in Edit"'}>Check version</button>
+        ${customActions ? '<span class="env-actions-divider"></span>' + customActions : ''}
+        <button class="secondary" data-env-action="add-action" data-env-slug="${escapeHtml(env.slug)}" title="Add a custom action button">+ Action</button>
+        <button class="secondary" data-env-action="edit" data-env-slug="${escapeHtml(env.slug)}">Edit</button>
+        <button class="secondary" data-env-action="delete" data-env-slug="${escapeHtml(env.slug)}" title="Remove this environment">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireEnvCard(env) {
+  const card = $('envs-body').querySelector(`.env[data-env-slug="${env.slug.replace(/"/g, '\\"')}"]`);
+  if (!card) return;
+  card.querySelectorAll('button[data-env-action]').forEach((btn) => {
+    const action = btn.getAttribute('data-env-action');
+    const slug = btn.getAttribute('data-env-slug');
+    btn.onclick = () => handleEnvAction(action, slug, btn);
+  });
+}
+
+async function handleEnvAction(action, slug, btn) {
+  switch (action) {
+    case 'deploy': {
+      if (!confirm(`Deploy now to ${slug}? This runs the deploy script over SSH.`)) return;
+      btn.disabled = true;
+      const t = btn.textContent; btn.textContent = 'Deploying…';
+      const r = await api(`/environments/${encodeURIComponent(slug)}/deploy`, { method: 'POST' });
+      btn.disabled = false; btn.textContent = t;
+      if (r.body && r.body.deploy && r.body.deploy.deployId) {
+        openDeployLog(r.body.deploy.deployId);
+      } else {
+        alertOutputError(slug, r);
+      }
+      refreshEnvironments();
+      break;
+    }
+    case 'logs': {
+      $('output-title').textContent = `Logs from ${slug}`;
+      $('output-status').innerHTML = '';
+      $('output-log').textContent = 'Loading…';
+      showOutputModal();
+      try {
+        const resp = await fetch(`${API_BASE}/environments/${encodeURIComponent(slug)}/logs`, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        const text = await resp.text();
+        if (resp.ok) $('output-log').textContent = text || '(no output)';
+        else $('output-log').textContent = `Error (${resp.status}): ${text}`;
+      } catch (e) {
+        $('output-log').textContent = `Network error: ${e.message}`;
+      }
+      break;
+    }
+    case 'test': {
+      btn.disabled = true;
+      const t = btn.textContent; btn.textContent = 'Testing…';
+      const r = await api(`/environments/${encodeURIComponent(slug)}/test`, { method: 'POST' });
+      btn.disabled = false; btn.textContent = t;
+      const msg = (r.body && r.body.ok) ? r.body.message : ((r.body && (r.body.message || r.body.error)) || 'Test failed');
+      alert((r.body && r.body.ok ? '✓ ' : '✗ ') + slug + ': ' + msg);
+      refreshEnvironments();
+      break;
+    }
+    case 'key': {
+      const r = await api(`/environments/${encodeURIComponent(slug)}/key`);
+      if (r.ok && r.body.publicKey) {
+        const env = await fetchEnv(slug);
+        showEnvKeyStep(slug, r.body.publicKey, env);
+      } else {
+        alert((r.body && r.body.error) || 'Could not fetch key');
+      }
+      break;
+    }
+    case 'version': {
+      probeAndShowVersion(slug);
+      break;
+    }
+    case 'add-action': {
+      $('action-env-slug').value = slug;
+      $('action-label').value = '';
+      $('action-command').value = '';
+      $('action-confirm').checked = false;
+      setMsg($('action-msg'), '', '');
+      $('action-modal').classList.remove('hidden'); $('action-modal').style.display = 'flex';
+      $('action-label').focus();
+      break;
+    }
+    case 'run': {
+      const actionId = btn.getAttribute('data-action-id');
+      const label = btn.getAttribute('data-action-label');
+      const requireConfirm = btn.getAttribute('data-confirm') === '1';
+      if (requireConfirm && !confirm(`Run "${label}" on ${slug}?`)) return;
+      btn.disabled = true;
+      const t = btn.textContent; btn.textContent = 'Running…';
+      const r = await api(`/environments/${encodeURIComponent(slug)}/actions/${actionId}/run`, { method: 'POST' });
+      btn.disabled = false; btn.textContent = t;
+      if (r.body && r.body.deploy && r.body.deploy.deployId) {
+        openDeployLog(r.body.deploy.deployId);
+      } else {
+        alert((r.body && r.body.error) || 'Action failed');
+      }
+      refreshEnvironments();
+      break;
+    }
+    case 'del-action': {
+      const actionId = btn.getAttribute('data-action-id');
+      if (!confirm('Remove this custom action?')) return;
+      const r = await api(`/environments/${encodeURIComponent(slug)}/actions/${actionId}`, { method: 'DELETE' });
+      if (r.ok) refreshEnvironments();
+      else alert((r.body && r.body.error) || 'Delete failed');
+      break;
+    }
+    case 'edit': {
+      openEditEnv(slug);
+      break;
+    }
+    case 'delete': {
+      if (!confirm(`Delete environment "${slug}"? This removes its SSH key and deploy history.`)) return;
+      const r = await api(`/environments/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      if (r.ok) refreshEnvironments();
+      else alert((r.body && r.body.error) || 'Delete failed');
+      break;
+    }
+  }
+}
+
+async function fetchEnv(slug) {
+  const r = await api(`/environments/${encodeURIComponent(slug)}`);
+  return (r.body && r.body.environment) || null;
+}
+
+async function probeAndShowVersion(slug) {
+  const target = $(`env-version-${slug}`);
+  if (target) target.innerHTML = 'Version: <span style="opacity:0.7;">probing…</span>';
+  const r = await api(`/environments/${encodeURIComponent(slug)}/refresh-version`, { method: 'POST' });
+  if (!target) return;
+  if (r.body && r.body.ok && r.body.version) {
+    target.innerHTML = `Version: <strong>${escapeHtml(r.body.version)}</strong>`;
+  } else {
+    const why = (r.body && (r.body.message || r.body.error)) || 'unknown';
+    target.innerHTML = `Version: <span class="env-status err">${escapeHtml(why)}</span>`;
+  }
+}
+
+function alertOutputError(slug, r) {
+  const msg = (r.body && (r.body.error || (r.body.deploy && r.body.deploy.errorMessage))) || 'Deploy failed';
+  alert(`${slug}: ${msg}`);
+}
+
+// ---- Add-environment modal ----
+
+async function openAddEnv() {
+  // Populate the repo dropdown from /repos
+  const rr = await api('/repos');
+  const repoOpts = ((rr.body && rr.body.repos) || []).map(rep => `<option value="${escapeHtml(rep.slug)}">${escapeHtml(rep.slug)}</option>`).join('');
+  if (!repoOpts) {
+    alert('Add a repo first — environments are tied to a repo so ShipPilot knows what to deploy.');
+    return;
+  }
+  $('env-repo').innerHTML = repoOpts;
+  // Reset fields
+  $('env-slug').value = ''; $('env-name').value = '';
+  $('env-host').value = ''; $('env-port').value = '22';
+  $('env-user').value = 'root'; $('env-path').value = '';
+  $('env-script').value = '';
+  $('env-log').value = ''; $('env-vercheck').value = '';
+  $('env-auto').checked = true;
+  $('env-pubkey').value = '';
+  setMsg($('env-form-msg'), '', ''); setMsg($('env-test-msg'), '', '');
+  $('env-modal-title').textContent = 'Add environment';
+  show($('env-step-form')); hide($('env-step-key'));
+  _envCreatedSlug = null;
+  $('env-modal').classList.remove('hidden'); $('env-modal').style.display = 'flex';
+}
+
+function closeAddEnv() {
+  $('env-modal').classList.add('hidden'); $('env-modal').style.display = 'none';
+  _envCreatedSlug = null;
+}
+
+async function doCreateEnv() {
+  const body = {
+    slug: $('env-slug').value.trim(),
+    name: $('env-name').value.trim() || $('env-slug').value.trim(),
+    host: $('env-host').value.trim(),
+    ssh_user: $('env-user').value.trim() || 'root',
+    ssh_port: parseInt($('env-port').value.trim(), 10) || 22,
+    repo_slug: $('env-repo').value,
+    deploy_path: $('env-path').value.trim(),
+    deploy_script: $('env-script').value,
+    log_command: $('env-log').value.trim() || null,
+    version_check_command: $('env-vercheck').value.trim() || null,
+    auto_deploy: $('env-auto').checked,
+  };
+  setMsg($('env-form-msg'), '', '');
+  $('env-create-btn').disabled = true;
+  const r = await api('/environments', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  $('env-create-btn').disabled = false;
+  if (!r.ok) {
+    setMsg($('env-form-msg'), 'err', (r.body && r.body.error) || 'Create failed');
+    return;
+  }
+  _envCreatedSlug = body.slug;
+  showEnvKeyStep(body.slug, r.body.publicKey, r.body.environment);
+  refreshEnvironments();
+}
+
+function showEnvKeyStep(slug, publicKey, env) {
+  hide($('env-step-form')); show($('env-step-key'));
+  $('env-modal-title').textContent = `Deploy key for ${slug}`;
+  $('env-pubkey').value = publicKey;
+  const target = (env && env.ssh_user && env.host)
+    ? `${env.ssh_user}@${env.host}` : slug;
+  $('env-key-target').textContent = target;
+  setMsg($('env-test-msg'), '', '');
+  _envCreatedSlug = slug;
+  $('env-modal').classList.remove('hidden'); $('env-modal').style.display = 'flex';
+}
+
+async function doTestEnvConnection() {
+  if (!_envCreatedSlug) return;
+  setMsg($('env-test-msg'), 'info', 'Testing…');
+  $('env-test-btn').disabled = true;
+  const r = await api(`/environments/${encodeURIComponent(_envCreatedSlug)}/test`, { method: 'POST' });
+  $('env-test-btn').disabled = false;
+  if (r.body && r.body.ok) {
+    setMsg($('env-test-msg'), 'ok', r.body.message);
+    refreshEnvironments();
+  } else {
+    setMsg($('env-test-msg'), 'err', (r.body && (r.body.message || r.body.error)) || 'Test failed');
+  }
+}
+
+async function doCopyEnvKey() {
+  const text = $('env-pubkey').value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $('env-copy-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch {
+    $('env-pubkey').select();
+  }
+}
+
+// ---- Edit-environment modal ----
+
+async function openEditEnv(slug) {
+  const env = await fetchEnv(slug);
+  if (!env) { alert('Could not load env'); return; }
+  // Populate repo dropdown
+  const rr = await api('/repos');
+  const repoOpts = ((rr.body && rr.body.repos) || []).map(rep =>
+    `<option value="${escapeHtml(rep.slug)}" ${rep.slug === env.repo_slug ? 'selected' : ''}>${escapeHtml(rep.slug)}</option>`
+  ).join('');
+  $('env-edit-repo').innerHTML = repoOpts;
+
+  $('env-edit-slug').value = env.slug;
+  $('env-edit-name').value = env.name || '';
+  $('env-edit-host').value = env.host || '';
+  $('env-edit-port').value = env.ssh_port || 22;
+  $('env-edit-user').value = env.ssh_user || 'root';
+  $('env-edit-path').value = env.deploy_path || '';
+  $('env-edit-script').value = env.deploy_script || '';
+  $('env-edit-log').value = env.log_command || '';
+  $('env-edit-vercheck').value = env.version_check_command || '';
+  $('env-edit-auto').checked = !!env.auto_deploy;
+  setMsg($('env-edit-msg'), '', '');
+  $('env-edit-modal').classList.remove('hidden'); $('env-edit-modal').style.display = 'flex';
+}
+
+function closeEditEnv() {
+  $('env-edit-modal').classList.add('hidden'); $('env-edit-modal').style.display = 'none';
+}
+
+async function doSaveEditEnv() {
+  const slug = $('env-edit-slug').value;
+  const body = {
+    name: $('env-edit-name').value.trim(),
+    host: $('env-edit-host').value.trim(),
+    ssh_port: parseInt($('env-edit-port').value.trim(), 10) || 22,
+    ssh_user: $('env-edit-user').value.trim() || 'root',
+    repo_slug: $('env-edit-repo').value,
+    deploy_path: $('env-edit-path').value.trim(),
+    deploy_script: $('env-edit-script').value,
+    log_command: $('env-edit-log').value.trim() || null,
+    version_check_command: $('env-edit-vercheck').value.trim() || null,
+    auto_deploy: $('env-edit-auto').checked,
+  };
+  setMsg($('env-edit-msg'), '', '');
+  $('env-edit-save').disabled = true;
+  const r = await api(`/environments/${encodeURIComponent(slug)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  $('env-edit-save').disabled = false;
+  if (r.ok) {
+    closeEditEnv();
+    refreshEnvironments();
+  } else {
+    setMsg($('env-edit-msg'), 'err', (r.body && r.body.error) || 'Save failed');
+  }
+}
+
+// ---- Custom action modal ----
+
+function closeActionModal() {
+  $('action-modal').classList.add('hidden'); $('action-modal').style.display = 'none';
+}
+
+async function doSaveAction() {
+  const slug = $('action-env-slug').value;
+  const body = {
+    label: $('action-label').value.trim(),
+    command: $('action-command').value,
+    requires_confirmation: $('action-confirm').checked,
+  };
+  if (!body.label) { setMsg($('action-msg'), 'err', 'Label is required'); return; }
+  if (!body.command.trim()) { setMsg($('action-msg'), 'err', 'Command is required'); return; }
+  $('action-save-btn').disabled = true;
+  const r = await api(`/environments/${encodeURIComponent(slug)}/actions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  $('action-save-btn').disabled = false;
+  if (r.ok) {
+    closeActionModal();
+    refreshEnvironments();
+  } else {
+    setMsg($('action-msg'), 'err', (r.body && r.body.error) || 'Save failed');
+  }
+}
+
+// ---- Output modal (shared by Tail Logs, Deploy Log, Action output) ----
+
+function showOutputModal() {
+  $('output-modal').classList.remove('hidden'); $('output-modal').style.display = 'flex';
+}
+function closeOutputModal() {
+  $('output-modal').classList.add('hidden'); $('output-modal').style.display = 'none';
 }
 
 // ---- Repos table + modal ----
@@ -598,6 +1259,32 @@ $('repo-test-btn').onclick = doTestConnection;
 $('repo-copy-btn').onclick = doCopyKey;
 // Backdrop click closes modal
 $('repo-modal').addEventListener('click', (e) => { if (e.target === $('repo-modal')) closeModal(); });
+
+// Environment modal buttons
+$('add-env-btn').onclick = openAddEnv;
+$('env-modal-close').onclick = closeAddEnv;
+$('env-cancel-btn').onclick = closeAddEnv;
+$('env-done-btn').onclick = closeAddEnv;
+$('env-create-btn').onclick = doCreateEnv;
+$('env-test-btn').onclick = doTestEnvConnection;
+$('env-copy-btn').onclick = doCopyEnvKey;
+$('env-modal').addEventListener('click', (e) => { if (e.target === $('env-modal')) closeAddEnv(); });
+
+// Edit-environment modal buttons
+$('env-edit-close').onclick = closeEditEnv;
+$('env-edit-cancel').onclick = closeEditEnv;
+$('env-edit-save').onclick = doSaveEditEnv;
+$('env-edit-modal').addEventListener('click', (e) => { if (e.target === $('env-edit-modal')) closeEditEnv(); });
+
+// Custom action modal buttons
+$('action-modal-close').onclick = closeActionModal;
+$('action-cancel-btn').onclick = closeActionModal;
+$('action-save-btn').onclick = doSaveAction;
+$('action-modal').addEventListener('click', (e) => { if (e.target === $('action-modal')) closeActionModal(); });
+
+// Output modal
+$('output-close').onclick = closeOutputModal;
+$('output-modal').addEventListener('click', (e) => { if (e.target === $('output-modal')) closeOutputModal(); });
 
 bootstrap();
 </script>

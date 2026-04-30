@@ -15,6 +15,7 @@ const { makeAuth } = require('./lib/auth');
 const authRoutes = require('./routes/auth');
 const releaseRoutes = require('./routes/release');
 const reposRoutes = require('./routes/repos');
+const environmentsRoutes = require('./routes/environments');
 
 const config = load();
 db.init(config.dbPath);
@@ -46,6 +47,9 @@ app.use('/api/auth', authRoutes.build(auth));
 
 // Repo management routes also use JSON.
 app.use('/api', reposRoutes.build(auth, config));
+
+// Environment management routes use JSON.
+app.use('/api', environmentsRoutes.build(auth, config));
 
 // Static UI
 app.use('/', express.static(path.join(__dirname, 'public')));
