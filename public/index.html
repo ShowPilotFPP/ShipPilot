@@ -111,6 +111,13 @@
     .msg.info { background: var(--panel-2); color: var(--text-dim); }
     .log { background: var(--log-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; font-family: var(--mono); font-size: 12px; line-height: 1.5; max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: var(--log-text); }
     table { width: 100%; border-collapse: collapse; }
+    /* Releases table needs fixed layout so long commit messages don't blow
+       out the column widths. The colgroup defines the widths; here we
+       allow word-wrapping inside cells and tighten vertical padding for
+       multi-line cells. */
+    .releases-table { table-layout: fixed; }
+    .releases-table td { vertical-align: top; word-wrap: break-word; overflow-wrap: anywhere; }
+    .releases-table td:nth-child(6) { font-size: 12px; line-height: 1.45; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
     th { color: var(--text-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
     td.status-success { color: var(--ok); }
@@ -167,7 +174,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.3.0</div>
+      <div class="version">v0.3.1</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -246,7 +253,16 @@
     <div class="card">
       <h2>Recent releases</h2>
       <div id="releases-empty" style="color: var(--text-dim);">No releases yet.</div>
-      <table id="releases-table" class="hidden">
+      <table id="releases-table" class="hidden releases-table">
+        <colgroup>
+          <col style="width: 110px;">
+          <col style="width: 100px;">
+          <col style="width: 80px;">
+          <col style="width: 60px;">
+          <col style="width: 80px;">
+          <col>
+          <col style="width: 56px;">
+        </colgroup>
         <thead><tr><th>When</th><th>Repo</th><th>Version</th><th>Status</th><th>Commit</th><th>Message</th><th></th></tr></thead>
         <tbody id="releases-body"></tbody>
       </table>
@@ -639,14 +655,16 @@ async function refreshReleases() {
   if (rows.length === 0) { show($('releases-empty')); hide($('releases-table')); return; }
   hide($('releases-empty')); show($('releases-table'));
   $('releases-body').innerHTML = rows.map(rel => {
-    const when = new Date(rel.created_at + 'Z').toLocaleString();
-    const sha = rel.commit_sha ? `<span class="sha">${escapeHtml(rel.commit_sha.slice(0,12))}</span>` : '';
+    const d = new Date(rel.created_at + 'Z');
+    const when = `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+    const sha = rel.commit_sha ? `<span class="sha">${escapeHtml(rel.commit_sha.slice(0,7))}</span>` : '';
     const status = rel.status === 'success' ? 'success' : 'failed';
     const msg = rel.status === 'success' ? escapeHtml(rel.commit_message) : escapeHtml(rel.error_message || rel.commit_message);
+    const ver = rel.version + (rel.tag ? ` <span class="sha">(${escapeHtml(rel.tag)})</span>` : '');
     return `<tr>
-      <td>${escapeHtml(when)}</td>
+      <td title="${escapeHtml(d.toLocaleString())}">${escapeHtml(when)}</td>
       <td>${escapeHtml(rel.repo)}</td>
-      <td>${escapeHtml(rel.version)}${rel.tag ? ` <span class="sha">(${escapeHtml(rel.tag)})</span>` : ''}</td>
+      <td>${ver}</td>
       <td class="status-${status}">${status}</td>
       <td>${sha}</td>
       <td>${msg}</td>
@@ -888,27 +906,32 @@ function alertOutputError(slug, r) {
 // ---- Add-environment modal ----
 
 async function openAddEnv() {
-  // Populate the repo dropdown from /repos
-  const rr = await api('/repos');
-  const repoOpts = ((rr.body && rr.body.repos) || []).map(rep => `<option value="${escapeHtml(rep.slug)}">${escapeHtml(rep.slug)}</option>`).join('');
-  if (!repoOpts) {
-    alert('Add a repo first — environments are tied to a repo so ShipPilot knows what to deploy.');
-    return;
+  try {
+    // Populate the repo dropdown from /repos
+    const rr = await api('/repos');
+    const repoOpts = ((rr.body && rr.body.repos) || []).map(rep => `<option value="${escapeHtml(rep.slug)}">${escapeHtml(rep.slug)}</option>`).join('');
+    if (!repoOpts) {
+      alert('Add a repo first — environments are tied to a repo so ShipPilot knows what to deploy.');
+      return;
+    }
+    $('env-repo').innerHTML = repoOpts;
+    // Reset fields
+    $('env-slug').value = ''; $('env-name').value = '';
+    $('env-host').value = ''; $('env-port').value = '22';
+    $('env-user').value = 'root'; $('env-path').value = '';
+    $('env-script').value = '';
+    $('env-log').value = ''; $('env-vercheck').value = '';
+    $('env-auto').checked = true;
+    $('env-pubkey').value = '';
+    setMsg($('env-form-msg'), '', ''); setMsg($('env-test-msg'), '', '');
+    $('env-modal-title').textContent = 'Add environment';
+    show($('env-step-form')); hide($('env-step-key'));
+    _envCreatedSlug = null;
+    $('env-modal').classList.remove('hidden'); $('env-modal').style.display = 'flex';
+  } catch (e) {
+    console.error('openAddEnv failed:', e);
+    alert('Could not open the Add environment dialog: ' + (e && e.message ? e.message : e));
   }
-  $('env-repo').innerHTML = repoOpts;
-  // Reset fields
-  $('env-slug').value = ''; $('env-name').value = '';
-  $('env-host').value = ''; $('env-port').value = '22';
-  $('env-user').value = 'root'; $('env-path').value = '';
-  $('env-script').value = '';
-  $('env-log').value = ''; $('env-vercheck').value = '';
-  $('env-auto').checked = true;
-  $('env-pubkey').value = '';
-  setMsg($('env-form-msg'), '', ''); setMsg($('env-test-msg'), '', '');
-  $('env-modal-title').textContent = 'Add environment';
-  show($('env-step-form')); hide($('env-step-key'));
-  _envCreatedSlug = null;
-  $('env-modal').classList.remove('hidden'); $('env-modal').style.display = 'flex';
 }
 
 function closeAddEnv() {
