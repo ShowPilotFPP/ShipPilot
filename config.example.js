@@ -56,6 +56,22 @@ module.exports = {
     },
   },
 
+  // ============================================================
+  // GitHub token — for creating Release objects after a tag push
+  // ============================================================
+  // Optional. If set, ShipPilot will create a GitHub Release via the REST
+  // API after every successful tag push. This lets ShowPilot's updater
+  // find the latest version without relying on GitHub's manually-set
+  // "latest" marker.
+  //
+  // Requires a GitHub PAT (classic or fine-grained) with:
+  //   - Contents: read & write  (to create releases)
+  //   - Metadata: read          (implied by all fine-grained tokens)
+  //
+  // Generate at: https://github.com/settings/tokens
+  // Set to null to skip Release creation (tags only, same as before).
+  githubToken: null,
+
   // Git identity for commits made by this tool.
   gitAuthor: {
     name: 'ShipPilot',
