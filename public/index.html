@@ -174,7 +174,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.3.4</div>
+      <div class="version">v0.3.5</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -596,12 +596,17 @@ async function doShip() {
   }
   if (r.ok && r.body && typeof r.body === 'object') {
     setMsg($('ship-msg'), 'ok', `Shipped ${r.body.manifest.repo} v${r.body.manifest.version} — ${r.body.commitSha.slice(0,12)}`);
-    // Render auto-deploy results, if any. Each entry is one env that the
-    // backend auto-deployed to. We show status + offer a Log button per env.
-    renderShipDeploys(r.body.deploys || []);
     setPicked(null); $('file').value = '';
+    if (r.body.deploys === 'pending') {
+      // Auto-deploys are running in the background. Show a spinner and
+      // poll until all envs settle.
+      renderShipDeploysPending();
+      pollDeployStatus(r.body.releaseId);
+    } else {
+      renderShipDeploys(r.body.deploys || []);
+    }
   } else if (r.ok) {
-    // Response was 2xx but not JSON — deploy likely succeeded (check release history).
+    // Response was 2xx but not JSON — release likely succeeded.
     setMsg($('ship-msg'), 'ok', 'Shipped — check release history to confirm.');
     setPicked(null); $('file').value = '';
   } else {
@@ -613,36 +618,88 @@ async function doShip() {
   refreshEnvironments();
 }
 
-// Render the per-env deploy summary that comes back with a successful release.
-function renderShipDeploys(deploys) {
-  // Find or create a sibling block under #ship-msg
+function renderShipDeploysPending() {
   let block = document.getElementById('ship-deploys');
   if (block) block.remove();
-  if (!deploys || !deploys.length) return;
   block = document.createElement('div');
   block.id = 'ship-deploys';
   block.className = 'deploys';
+  block.innerHTML = `<div style="font-weight: 500; margin-bottom: 6px;">Auto-deploy results:</div>
+    <div class="deploys-row"><span class="deploy-detail" style="opacity:0.7;">Deploying… <span id="ship-deploy-dots">.</span></span></div>`;
+  $('ship-msg').appendChild(block);
+  // Animate dots while polling
+  let dots = 0;
+  block._dotsTimer = setInterval(() => {
+    const el = document.getElementById('ship-deploy-dots');
+    if (!el) { clearInterval(block._dotsTimer); return; }
+    dots = (dots + 1) % 4;
+    el.textContent = '.'.repeat(dots + 1);
+  }, 500);
+}
+
+async function pollDeployStatus(releaseId) {
+  const maxAttempts = 60; // 5 min at 5s intervals
+  let attempts = 0;
+  while (attempts < maxAttempts) {
+    await new Promise(res => setTimeout(res, 5000));
+    attempts++;
+    try {
+      const r = await api(`/releases/${releaseId}/deploys`);
+      if (!r.ok) break;
+      if (r.body.allSettled) {
+        renderShipDeploys(r.body.deploys);
+        refreshEnvironments();
+        return;
+      }
+      // Not yet settled — render intermediate state and keep polling
+      renderShipDeploys(r.body.deploys);
+    } catch (e) {
+      break;
+    }
+  }
+  // Timed out or error — show whatever we have
+  refreshEnvironments();
+}
+
+// Render the per-env deploy summary. Handles both the immediate (sync)
+// shape {deploy_id, env_name, status, error_message} and the polled
+// shape {id, env_name, env_slug, status, error_message, finished_at}.
+function renderShipDeploys(deploys) {
+  const block = document.getElementById('ship-deploys');
+  // Stop the dots animation timer if present
+  if (block && block._dotsTimer) clearInterval(block._dotsTimer);
+  if (block) block.remove();
+  if (!deploys || !deploys.length) return;
+  const newBlock = document.createElement('div');
+  newBlock.id = 'ship-deploys';
+  newBlock.className = 'deploys';
   const rows = deploys.map((d) => {
     if (d.error) {
       return `<div class="deploys-row"><span class="deploy-name">Auto-deploy</span>
               <span class="deploy-detail" style="color: var(--err-text);">${escapeHtml(d.error)}</span></div>`;
     }
-    const status = d.status === 'success' ? 'ok' : 'err';
-    const detail = d.status === 'success'
-      ? `deployed`
-      : escapeHtml(d.error_message || 'failed');
-    const logBtn = d.deploy_id
-      ? `<button class="secondary" data-deploy-id="${d.deploy_id}" style="padding: 2px 8px; font-size: 11px;">Log</button>`
+    // Support both shape variants: deploy_id (sync) and id (polled)
+    const deployId = d.deploy_id || d.id;
+    const running = !d.finished_at && d.status !== 'success' && d.status !== 'failed';
+    const status = d.status === 'success' ? 'ok' : running ? 'warn' : 'err';
+    const detail = running
+      ? 'deploying…'
+      : d.status === 'success'
+        ? 'deployed'
+        : escapeHtml(d.error_message || 'failed');
+    const symbol = running ? '⋯' : d.status === 'success' ? '✓' : '✗';
+    const logBtn = deployId && !running
+      ? `<button class="secondary" data-deploy-id="${deployId}" style="padding: 2px 8px; font-size: 11px;">Log</button>`
       : '';
     return `<div class="deploys-row">
       <span><span class="deploy-name">${escapeHtml(d.env_name || d.env_slug || '?')}</span>
-            &nbsp; <span class="env-status ${status}">${status === 'ok' ? '✓' : '✗'} ${detail}</span></span>
+            &nbsp; <span class="env-status ${status}">${symbol} ${detail}</span></span>
       <span>${logBtn}</span>
     </div>`;
   }).join('');
-  block.innerHTML = `<div style="font-weight: 500; margin-bottom: 6px;">Auto-deploy results:</div>${rows}`;
-  $('ship-msg').appendChild(block);
-  block.querySelectorAll('button[data-deploy-id]').forEach(btn => {
+  newBlock.innerHTML = `<div style="font-weight: 500; margin-bottom: 6px;">Auto-deploy results:</div>${rows}`;
+  $('ship-msg').appendChild(newBlock);
+  newBlock.querySelectorAll('button[data-deploy-id]').forEach(btn => {
     btn.onclick = () => openDeployLog(btn.getAttribute('data-deploy-id'));
   });
 }

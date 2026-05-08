@@ -1,6 +1,6 @@
 {
   "name": "shippilot",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Tarball-driven release tool for ShowPilot and ShowPilot-plugin",
   "main": "server.js",
   "scripts": {

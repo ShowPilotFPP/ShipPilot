@@ -186,8 +186,10 @@ ShipPilot v0.3.x added a full deploy system. Each repo can have one or more **en
 - Environments are managed in the ShipPilot UI (Environments section)
 - Each env has: name, host, SSH user/port, key path, repo slug, deploy path, deploy script, optional log command, optional version check command
 - `auto_deploy=1` means the script runs automatically after every successful release of that repo
-- Results appear in the UI as "Auto-deploy results" below the ship confirmation
+- Auto-deploys run **asynchronously** (v0.3.5+) — the release response is sent immediately after the git push, then deploys fire in the background. The UI polls `GET /releases/:id/deploys` every 5s until all envs settle, showing a "Deploying…" spinner.
 - Deploy history is in the `deploys` table, viewable per-env
+
+**Why async matters:** ShipPilot is served via Cloudflare, which has a ~100s upstream timeout. SSH deploys (git pull + npm install + pm2 restart) can exceed that. Before v0.3.5, this caused Cloudflare to return an HTML 524 error page before ShipPilot could respond — the release had succeeded but the UI showed an error.
 
 **How `lib/deploy.js` works:**
 - `autoDeployForRelease({ repoSlug, ... })` — looks up all auto-deploy envs for the repo, runs them in parallel (serialized per-env via an in-memory lock map to prevent races)
@@ -202,9 +204,6 @@ ShipPilot v0.3.x added a full deploy system. Each repo can have one or more **en
 - `execScript(env, script, config, { onLine })` — runs a multi-line bash script via `bash -s` (stdin), streams output line by line
 - **TOFU host-key pinning:** first connection accepts any host key and persists it to `data/env-known-hosts/<slug>`. Subsequent connections require exact match. The DB `host_key_verified` flag controls which mode. Run "Test SSH" in the UI to pin a new env's host key.
 - Connect timeout: 15s. Command/script timeout: 10 minutes.
-
-**Important: auto-deploy can affect the `doShip` response.**
-The `POST /release` route runs `autoDeployForRelease` synchronously before sending the response. If the deploy script restarts a service behind the same NPM reverse proxy (e.g. `pm2 restart showpilot` on the ShowPilot LXC), NPM may drop the in-flight `/push/release` connection mid-response. The UI handles this gracefully since v0.3.4 — a non-JSON 2xx response shows "Shipped — check release history to confirm" instead of crashing. The release always succeeds regardless.
 
 ---
 
@@ -279,12 +278,12 @@ Will doesn't write code himself. He runs commands you give him. So:
 | 0.2.0 | Manage repos from the UI: add/test/delete with auto-generated SSH keys; deprecate config.repos block |
 | 0.3.x | Environments + deploy system: SSH deploy runner (`lib/ssh.js`, `lib/deploy.js`), per-env TOFU host-key pinning, auto-deploy after release, manual deploy, custom action buttons, log tail, version check. GitHub Release creation after tag push (`config.githubToken`). |
 | 0.3.4 | Safe JSON parsing in `doShip`. `resp.json()` was called unconditionally — if NPM dropped the connection mid-response (e.g. during a ShowPilot auto-deploy that restarted a proxied service), the parse threw "not valid JSON" even though the release had already succeeded on GitHub. Now checks content-type first, falls back to text. A 2xx non-JSON response shows "Shipped — check release history to confirm" instead of crashing. Also: PRIMER.md added to repo. |
+| 0.3.5 | Async auto-deploy. `POST /release` now responds immediately after the git push, then fires SSH deploys in the background via `setImmediate`. The UI polls `GET /releases/:id/deploys` every 5s, showing a "Deploying…" spinner until all envs settle. Fixes Cloudflare 524 errors when deploy scripts take longer than ~100s. `listDeploysForRelease` query updated to include env name/slug via JOIN. |
 
 ---
 
 ## Open items / tech debt
 
-- **Auto-deploy blocks the release response.** `autoDeployForRelease` runs synchronously inside `POST /release` before the response is sent. If a deploy script takes a long time (or restarts a service behind the same proxy), the browser may see a dropped connection even though the release succeeded. Long-term fix: run deploys async and return deploy status via polling or a separate endpoint. Short-term: the v0.3.4 safe-JSON fix makes this survivable.
 - **No backup/restore for ShipPilot itself.** If the LXC dies, the SSH keys, DB, and history are lost. Backup of `data/` would suffice — that's where everything lives.
 - **No rate limit on login.** A determined attacker could brute-force the password. Practical mitigation right now is the IP allowlist option in NPM, not yet configured.
 - **No HTTPS direct on ShipPilot.** Relies on NPM in front. Cookies are not flagged Secure for this reason — leaving the LXC as plain HTTP. If Will ever exposes ShipPilot directly, the cookie flag and TLS need to come together.

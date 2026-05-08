@@ -1,6 +1,7 @@
 // Release routes. POST /release with a multipart "tarball" field runs the
 // pipeline synchronously and returns the result. GET /releases lists
 // history. GET /releases/:id/log returns the full captured log.
+// GET /releases/:id/deploys polls deploy status for async auto-deploys.
 
 const express = require('express');
 const multer = require('multer');
@@ -43,39 +44,56 @@ function build(auth, config) {
       error_message: result.error || null,
       log: result.log,
     });
+    const releaseId = releaseRow.lastInsertRowid;
 
-    // After a successful release, fan out to every auto-deploy env for
-    // this repo. Failures here are recorded but don't fail the release —
-    // the commit is already on GitHub. The user sees deploy results in
-    // the response and can re-run failed envs manually from the UI.
-    let deployResults = [];
-    if (result.ok && result.manifest) {
-      try {
-        deployResults = await deploy.autoDeployForRelease({
-          repoSlug: result.manifest.repo,
-          version: result.manifest.version,
-          tag: result.manifest.tag,
-          releaseId: releaseRow.lastInsertRowid,
-          config,
-        });
-      } catch (e) {
-        // If autoDeployForRelease itself throws (DB error, etc.) we surface
-        // it but still return the release as successful.
-        deployResults = [{ error: e.message }];
-      }
+    if (!result.ok) {
+      return res.status(400).json({ ok: false, error: result.error, log: result.log });
     }
 
-    if (result.ok) {
-      res.json({
+    // Check whether this repo has any auto-deploy environments. If none,
+    // respond immediately with deploys: [] — no polling needed.
+    const autoDeployEnvs = db.listEnvironmentsByRepo(result.manifest.repo, true);
+
+    if (!autoDeployEnvs.length) {
+      return res.json({
         ok: true,
         manifest: result.manifest,
         commitSha: result.commitSha,
         log: result.log,
-        deploys: deployResults,
+        releaseId,
+        deploys: [],
       });
-    } else {
-      res.status(400).json({ ok: false, error: result.error, log: result.log });
     }
+
+    // There are auto-deploy environments. Respond immediately with
+    // deploys: 'pending' and fire them in the background. The UI polls
+    // GET /releases/:id/deploys until all settle.
+    //
+    // We use setImmediate so the response is flushed before the SSH
+    // work starts. This prevents Cloudflare's ~100s upstream timeout
+    // from killing the connection mid-deploy.
+    res.json({
+      ok: true,
+      manifest: result.manifest,
+      commitSha: result.commitSha,
+      log: result.log,
+      releaseId,
+      deploys: 'pending',
+    });
+
+    setImmediate(async () => {
+      try {
+        await deploy.autoDeployForRelease({
+          repoSlug: result.manifest.repo,
+          version: result.manifest.version,
+          tag: result.manifest.tag,
+          releaseId,
+          config,
+        });
+      } catch (e) {
+        console.error(`[release] background auto-deploy error for release ${releaseId}: ${e.message}`);
+      }
+    });
   });
 
   r.get('/releases', auth.requireAuth, (req, res) => {
@@ -86,6 +104,16 @@ function build(auth, config) {
     const row = db.getReleaseLog(parseInt(req.params.id, 10));
     if (!row) return res.status(404).json({ error: 'not found' });
     res.type('text/plain').send(row.log || '');
+  });
+
+  // Polling endpoint for async auto-deploy results. Returns the deploy
+  // rows for the release. The UI polls until all rows have a non-running
+  // status (i.e. finished_at is set).
+  r.get('/releases/:id/deploys', auth.requireAuth, (req, res) => {
+    const releaseId = parseInt(req.params.id, 10);
+    const deploys = db.listDeploysForRelease(releaseId);
+    const allSettled = deploys.length > 0 && deploys.every(d => d.finished_at !== null);
+    res.json({ deploys, allSettled });
   });
 
   return r;
