@@ -174,7 +174,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.3.3</div>
+      <div class="version">v0.3.4</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -581,7 +581,9 @@ async function doShip() {
   let r;
   try {
     const resp = await fetch(API_BASE + '/release', { method: 'POST', body: fd, credentials: 'same-origin' });
-    r = { ok: resp.ok, status: resp.status, body: await resp.json() };
+    const ct = resp.headers.get('content-type') || '';
+    const body = ct.includes('application/json') ? await resp.json() : await resp.text();
+    r = { ok: resp.ok, status: resp.status, body };
   } catch (e) {
     setMsg($('ship-msg'), 'err', `Network error: ${e.message}`);
     $('ship-btn').disabled = false; $('clear-btn').disabled = false;
@@ -592,14 +594,18 @@ async function doShip() {
     $('ship-log').textContent = r.body.log;
     show($('ship-log'));
   }
-  if (r.ok) {
+  if (r.ok && r.body && typeof r.body === 'object') {
     setMsg($('ship-msg'), 'ok', `Shipped ${r.body.manifest.repo} v${r.body.manifest.version} — ${r.body.commitSha.slice(0,12)}`);
     // Render auto-deploy results, if any. Each entry is one env that the
     // backend auto-deployed to. We show status + offer a Log button per env.
     renderShipDeploys(r.body.deploys || []);
     setPicked(null); $('file').value = '';
+  } else if (r.ok) {
+    // Response was 2xx but not JSON — deploy likely succeeded (check release history).
+    setMsg($('ship-msg'), 'ok', 'Shipped — check release history to confirm.');
+    setPicked(null); $('file').value = '';
   } else {
-    setMsg($('ship-msg'), 'err', (r.body && r.body.error) || `Failed (HTTP ${r.status})`);
+    setMsg($('ship-msg'), 'err', (r.body && r.body.error) || (typeof r.body === 'string' && r.body.slice(0, 120)) || `Failed (HTTP ${r.status})`);
   }
   $('ship-btn').disabled = !pickedFile;
   $('clear-btn').disabled = !pickedFile;
