@@ -1,0 +1,88 @@
+# Example: ship a branch through ShipPilot from GitHub Actions (ShipPilot v0.4.0+).
+#
+# Copy to .github/workflows/shippilot-release.yml in the repo you want to ship.
+# It packages the chosen branch (typically a pull request's branch) exactly the
+# way a hand-built release tarball is packaged and uploads it to ShipPilot,
+# which runs its normal pipeline: preflight checks, commit to the target
+# branch, tag, GitHub Release, auto-deploy. Nothing reaches the target branch
+# except through ShipPilot.
+#
+# Setup:
+#   1. In ShipPilot: API tokens -> Create token. Tick only the repo(s) this
+#      workflow may release. Copy the token (shown once).
+#   2. In this GitHub repo: Settings -> Secrets and variables -> Actions:
+#        SHIPPILOT_URL    e.g. https://example.com/push  (no trailing slash)
+#        SHIPPILOT_TOKEN  the token from step 1
+#        SHIPPILOT_REPO   the ShipPilot repo slug, e.g. showpilot
+#   3. Bump "version" in package.json on the branch, then run this workflow
+#      from the Actions tab, choosing that branch.
+#
+# Run it on a branch other than the one ShipPilot ships to: if the code is
+# already there, ShipPilot refuses the release ("no changes vs current HEAD").
+
+name: Ship via ShipPilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_message:
+        description: "Commit message for the release (first line becomes the GitHub Release title)"
+        required: true
+      tag:
+        description: "Create a tag vX.Y.Z from package.json (untick for untagged pre-releases)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to run on the branch ShipPilot ships to
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "::error::Run this on the branch you want to ship (e.g. a PR branch), not main."
+            exit 1
+          fi
+
+      - name: Build the release tarball
+        env:
+          REPO_SLUG: ${{ secrets.SHIPPILOT_REPO }}
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+          WITH_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p out
+          # git archive = tracked files only: no .git, node_modules, config.js or data/.
+          git archive --format=tar --prefix="${REPO_SLUG}/" HEAD | tar -x -C out
+          python3 - <<PY
+          import json, os
+          m = {"repo": os.environ["REPO_SLUG"], "version": "${VERSION}", "commit_message": os.environ["COMMIT_MESSAGE"]}
+          if os.environ.get("WITH_TAG") == "true":
+              m["tag"] = "v${VERSION}"
+          json.dump(m, open("out/${REPO_SLUG}/.release.json", "w"), indent=2)
+          PY
+          tar -czf release.tar.gz -C out "${REPO_SLUG}"
+          echo "Packaged ${REPO_SLUG} ${VERSION}"
+
+      - name: Upload to ShipPilot
+        env:
+          SHIPPILOT_URL: ${{ secrets.SHIPPILOT_URL }}
+          SHIPPILOT_TOKEN: ${{ secrets.SHIPPILOT_TOKEN }}
+        run: |
+          set -uo pipefail
+          HTTP=$(curl -sS -o result.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${SHIPPILOT_TOKEN}" \
+            -F "tarball=@release.tar.gz" \
+            "${SHIPPILOT_URL}/api/release")
+          python3 -c "import json; d=json.load(open('result.json')); print(d.get('log') or d)"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::ShipPilot refused the release (HTTP $HTTP): $(python3 -c "import json; print(json.load(open('result.json')).get('error'))")"
+            exit 1
+          fi
+          echo "Shipped. Deploys (if any) continue in ShipPilot: GET ${SHIPPILOT_URL}/api/releases/<id>/deploys with the same token."

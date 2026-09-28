@@ -1,14 +1,14 @@
 # ShipPilot Project Primer
 
-This document gives you (Claude, in a future conversation) the context you need to help Will work on ShipPilot effectively. Read this first before any other project files.
+This document gives you (Claude, in a future conversation) the context you need to help the maintainer work on ShipPilot effectively. Read this first before any other project files.
 
 ---
 
 ## What ShipPilot is
 
-ShipPilot is a tarball-driven release tool. Will doesn't write code himself; he works with Claude, who packages updates as tarballs. ShipPilot is the web UI Will uses to take a tarball and turn it into a real GitHub commit, tag, and push — so the release flow is "drop a `.tar.gz` in a browser" instead of "shell into a dev box, extract, git add, commit, tag, push, push tag."
+ShipPilot is a tarball-driven release tool. The maintainer doesn't write code; they work with Claude, who packages updates as tarballs. ShipPilot is the web UI the maintainer uses to take a tarball and turn it into a real GitHub commit, tag, and push — so the release flow is "drop a `.tar.gz` in a browser" instead of "shell into a dev box, extract, git add, commit, tag, push, push tag."
 
-It's a sibling to ShowPilot, not part of it. ShowPilot is the light-show software; ShipPilot is the tool that ships ShowPilot (and ShowPilot-plugin, and ShipPilot itself, and any other repos Will adds).
+It's a sibling to ShowPilot, not part of it. ShowPilot is the light-show software; ShipPilot is the tool that ships ShowPilot (and ShowPilot-plugin, and ShipPilot itself, and any other repos the maintainer adds).
 
 **The key idea:** every tarball Claude packages contains a `.release.json` file at its root. ShipPilot reads that manifest, figures out which repo to push to, validates a few preflight checks, applies the tarball over a managed git clone, commits, tags, pushes. On any failure it rolls back so the clone is always either fully shipped or fully untouched.
 
@@ -64,16 +64,16 @@ It's a sibling to ShowPilot, not part of it. ShowPilot is the light-show softwar
 ## Deployment topology
 
 **ShipPilot LXC (Proxmox)**
-- Host: `192.168.1.231` (called `CT104` internally)
+- Host: a Proxmox LXC on the LAN (`<shippilot-host>` below)
 - Path: `/opt/shippilot/`
 - Process manager: **PM2** (process name: `shippilot`)
 - Runtime: Node 22, Ubuntu 24.04
-- Public URL: `lightsondrake.org/push` (via Nginx Proxy Manager + custom location with rewrite)
+- Public URL: `https://<your-domain>/push` (via Nginx Proxy Manager + custom location with rewrite)
 - Restart: `pm2 restart shippilot`
 - Logs: `pm2 logs shippilot`
 
 **Reverse proxy quirk worth knowing:**
-NPM forwards `lightsondrake.org/push/*` to `http://192.168.1.231:3200/*` with a rewrite rule:
+NPM forwards `<your-domain>/push/*` to `http://<shippilot-host>:3200/*` with a rewrite rule:
 ```
 rewrite ^/push/?(.*)$ /$1 break;
 ```
@@ -115,11 +115,11 @@ ShipPilot ONLY rewrites the managed block. The marker-based logic in `lib/ssh-co
 ShipPilot can ship its own updates via its own UI. The flow:
 
 1. Claude packages a tarball at `/mnt/user-data/outputs/shippilot-vX.Y.Z.tar.gz`
-2. Will downloads it, drops it into the ShipPilot UI at `lightsondrake.org/push`
+2. The maintainer downloads it and drops it into the ShipPilot UI (`<your-domain>/push`)
 3. The pipeline commits to GitHub, pushes the tag
-4. **Will then has to manually pull and restart on the LXC**, because the running ShipPilot pushed the new code to GitHub but is still running the old version:
+4. **The maintainer then has to manually pull and restart on the LXC**, because the running ShipPilot pushed the new code to GitHub but is still running the old version:
    ```bash
-   ssh root@192.168.1.231
+   ssh root@<shippilot-host>
    cd /opt/shippilot && git pull origin main
    npm install      # in case dependencies changed
    pm2 restart shippilot
@@ -218,7 +218,7 @@ Don't reorder these without thinking.
 **`API_BASE` derivation in the UI** lets ShipPilot run at any path prefix (`/`, `/push`, `/anything`) without code changes. Implemented in `public/index.html`. Don't introduce hard-coded `/api/...` paths.
 
 **Repos live in the DB, not config.js (since v0.2.0).**
-The old `config.repos` block is deprecated but still works as a one-time seed. On startup, `lib/repos.js#migrateFromConfig` imports any config.js entries that aren't already in the DB. Migrated entries are flagged `managed=0` because ShipPilot didn't generate their keys and shouldn't manage their SSH config blocks. Three legacy repos exist on Will's prod LXC: `showpilot`, `showpilot-plugin`, `shippilot` — all `managed=0`.
+The old `config.repos` block is deprecated but still works as a one-time seed. On startup, `lib/repos.js#migrateFromConfig` imports any config.js entries that aren't already in the DB. Migrated entries are flagged `managed=0` because ShipPilot didn't generate their keys and shouldn't manage their SSH config blocks. Three legacy repos exist on the production LXC: `showpilot`, `showpilot-plugin`, `shippilot` — all `managed=0`.
 
 **Release pipeline rollback** (`lib/release.js`):
 1. Snapshot HEAD before any mutation
@@ -238,7 +238,7 @@ After a successful tag push, ShipPilot calls the GitHub REST API to create a for
 
 **Syntax check skips vendor blobs.** `node --check` chokes on minified files (it wraps in a function and minified bundles use top-level constructs that fail in that wrapper). The pre-flight skips `vendor/` directories and any `*.min.js`. Don't try to "fix" this by checking everything — the bug isn't in the code, it's in node --check's wrapping.
 
-**The DB filename was once `showpilot.db` due to a copy-paste typo from ShowPilot's config.** Fixed in v0.2.0's example config (`shippilot.db`). If working on an old install, look in `data/` for both names — Will has bumped into this.
+**The DB filename was once `showpilot.db` due to a copy-paste typo from ShowPilot's config.** Fixed in v0.2.0's example config (`shippilot.db`). If working on an old install, look in `data/` for both names — this has happened before.
 
 **SSH config rewrite is marker-based** (`lib/ssh-config.js`). The module ONLY touches content between `# === BEGIN SHIPPILOT-MANAGED ===` and `# === END SHIPPILOT-MANAGED ===`. Anything outside is preserved verbatim. On a malformed file (BEGIN without END), it refuses to write. Don't change this behavior without thinking very carefully.
 
@@ -249,25 +249,25 @@ After a successful tag push, ShipPilot calls the GitHub REST API to create a for
 
 ---
 
-## Working style — what Will expects
+## Working style — what the maintainer expects
 
 Same as the ShowPilot primer:
 
-- **Direct and minimal.** Surgical edits, not architectural rewrites. If you find yourself proposing a refactor, stop and ask. Will pushes back hard on over-engineering.
+- **Direct and minimal.** Surgical edits, not architectural rewrites. If you find yourself proposing a refactor, stop and ask. The maintainer pushes back hard on over-engineering.
 - **Don't fabricate.** If you don't know what something does, look at the code or ask. Don't make up file paths, function names, or behavior.
 - **Show your work in code, not in chat.** When you find a bug, paste the reasoning concisely, then make the fix. Don't write three paragraphs of "let me think about this" before each edit.
 - **Test what you can.** If a fix involves a regex, a state machine, anything testable in isolation, write a quick `/tmp/test.js` and run it before claiming the fix works. The repos lib was tested this way before shipping; do the same for new logic.
 - **One feature per version bump.** Each tarball should be a coherent change. If you're touching three unrelated things, that's three releases.
 - **Comments explain WHY, not WHAT.** The code already says what. Comments are for the rationale that isn't obvious from reading — middleware ordering invariants, edge cases, why a particular regex shape was chosen.
 
-Will doesn't write code himself. He runs commands you give him. So:
-- Give him scripts he can paste, not "edit this file at line 47"
-- Bake version bumps into your edits (don't make him hunt for spots to update)
+The maintainer doesn't write code. They run commands you give them. So:
+- Give them scripts they can paste, not "edit this file at line 47"
+- Bake version bumps into your edits (don't make them hunt for spots to update)
 - Always include the standard sanity-check syntax command before packaging
 
 ---
 
-## Recent state (as of v0.3.4, May 2026)
+## Recent state (as of v0.4.0, September 2026)
 
 | Version | Change |
 |---------|--------|
@@ -279,6 +279,21 @@ Will doesn't write code himself. He runs commands you give him. So:
 | 0.3.x | Environments + deploy system: SSH deploy runner (`lib/ssh.js`, `lib/deploy.js`), per-env TOFU host-key pinning, auto-deploy after release, manual deploy, custom action buttons, log tail, version check. GitHub Release creation after tag push (`config.githubToken`). |
 | 0.3.4 | Safe JSON parsing in `doShip`. `resp.json()` was called unconditionally — if NPM dropped the connection mid-response (e.g. during a ShowPilot auto-deploy that restarted a proxied service), the parse threw "not valid JSON" even though the release had already succeeded on GitHub. Now checks content-type first, falls back to text. A 2xx non-JSON response shows "Shipped — check release history to confirm" instead of crashing. Also: PRIMER.md added to repo. |
 | 0.3.5 | Async auto-deploy. `POST /release` now responds immediately after the git push, then fires SSH deploys in the background via `setImmediate`. The UI polls `GET /releases/:id/deploys` every 5s, showing a "Deploying…" spinner until all envs settle. Fixes Cloudflare 524 errors when deploy scripts take longer than ~100s. `listDeploysForRelease` query updated to include env name/slug via JOIN. |
+| 0.4.0 | **API tokens for automated uploads** (see "API tokens and automated releases"): `POST /release` accepts a browser session OR `Authorization: Bearer shp_…`; tokens are managed in a new UI card (session-only routes `GET/POST/DELETE /api/tokens`), stored as SHA-256 hashes, shown once, optionally limited to repo slugs, revocable, with last-used time. Tokens can only upload releases and poll `GET /releases/:id/deploys` (limited tokens: their repos only). New `releases.released_by` column (auto-migrated) shown in history as "by user: …" / "by api token: …". `fetchAndReset` now fetches all tags (`--tags --force`) so the tag-collision preflight also sees tags created on GitHub. Example workflow in `docs/github-actions-release.example.yml`. Primer and repo sanitized (no personal names, domains or internal addresses; the config example, UI placeholder and tests use example values). Tested against a running copy upgraded from v0.3.5's database with a local bare repo as origin: history kept and migrated; session and token uploads succeed; a limited token is refused for another repo (nothing tagged); no auth / wrong token → 401 with no temp file written; tokens get 401 on tokens/repos/history/logs; deploy status 200 for own repo, 404 otherwise; a tag already on GitHub (on another branch) is caught at preflight; a commit merged on GitHub first is released on top of cleanly; revocation is immediate; only hashes stored. |
+
+---
+
+## API tokens and automated releases (v0.4.0)
+
+`POST /api/release` accepts either a signed-in browser session or an API token (`Authorization: Bearer shp_…`). This lets an automated uploader, such as a GitHub Actions workflow, ship through the normal pipeline without a browser.
+
+- **Scope:** a token can ONLY upload releases and poll `GET /api/releases/:id/deploys`. Every other route (repos, environments, users, history, logs, tokens) stays browser-session-only (`requireAuth`), so a leaked token cannot change configuration or mint more tokens. `requireUploadAuth` in `lib/auth.js` is used on exactly those two routes. Auth runs before multer, so unauthenticated uploads are never written to disk.
+- **Repo limits:** a token may be limited to repo slugs (`allowed_repos`); `performRelease` refuses any other manifest repo before touching a clone, and deploy-status polling only shows those repos' releases.
+- **Storage:** tokens look like `shp_` + 43 base64url characters; only the SHA-256 hash and an 8-character prefix (for recognition in the UI) are stored. The value is shown once, at creation. Revoked tokens stay listed (greyed) for the audit trail.
+- **Audit:** every release records `released_by` ("user: <name>" or "api token: <name>"), shown under the message in Recent releases and logged in the release log.
+- **Mixed flows are safe:** before applying a tarball, the clone is synced to `origin/<branch>` (fetch, reset --hard, clean) and all tags are fetched, so commits merged on GitHub directly (e.g. a PR) are simply built upon, and a tag that already exists on GitHub is caught at preflight. A tarball identical to the current branch is refused ("no changes"), so automation must ship a branch other than the target (see the example workflow).
+- **Example workflow:** `docs/github-actions-release.example.yml` (manual `workflow_dispatch` on a chosen branch → packages with `git archive` + `.release.json` from `package.json` → uploads with the token → fails the job if ShipPilot refuses). Secrets: `SHIPPILOT_URL`, `SHIPPILOT_TOKEN`, `SHIPPILOT_REPO`.
+- **Exposure note:** a token is as powerful as a release upload, which includes auto-deploys. Limit tokens to the repos that need them, store them only as CI secrets, and revoke any token that may have leaked.
 
 ---
 
@@ -286,32 +301,30 @@ Will doesn't write code himself. He runs commands you give him. So:
 
 - **No backup/restore for ShipPilot itself.** If the LXC dies, the SSH keys, DB, and history are lost. Backup of `data/` would suffice — that's where everything lives.
 - **No rate limit on login.** A determined attacker could brute-force the password. Practical mitigation right now is the IP allowlist option in NPM, not yet configured.
-- **No HTTPS direct on ShipPilot.** Relies on NPM in front. Cookies are not flagged Secure for this reason — leaving the LXC as plain HTTP. If Will ever exposes ShipPilot directly, the cookie flag and TLS need to come together.
-- **DB filename typo** (`showpilot.db` instead of `shippilot.db`) might exist on Will's prod LXC depending on history. Don't rename without coordinating — losing the history table is a bad day.
+- **No HTTPS direct on ShipPilot.** Relies on NPM in front. Cookies are not flagged Secure for this reason — leaving the LXC as plain HTTP. If ShipPilot is ever exposed directly, the cookie flag and TLS need to come together.
+- **DB filename typo** (`showpilot.db` instead of `shippilot.db`) might exist on the production LXC depending on history. Don't rename without coordinating — losing the history table is a bad day.
 - **The bootstrap problem** (a ShipPilot release that crashes on startup leaves you unable to use ShipPilot to ship the fix). No clean solution; documented above.
 
 ---
 
-## Other Will context (lightly)
+## Wider context (lightly)
 
-- Will runs Lights On Drake (lightsondrake.org), a synchronized Christmas/Halloween light show. ShowPilot is the main software; ShipPilot exists to make ShowPilot easier to update.
-- ShowPilot has both a viewer side (audience-facing, no auth) and an admin side (Will, password-protected). ShipPilot is admin-only by definition.
-- Will uses Windows for his desktop, runs multiple LXCs on Proxmox, has a separate Windows Server for a few non-show apps (HG Cellular, pokedex.hgcellular.com, NWAobits, the TCG Price Dashboard). ShipPilot is in the Proxmox set.
-- He's iterative and tests risky stuff before pushing to prod. The Docker test container for ShowPilot served that role; for ShipPilot, the LXC IS prod (no separate test environment).
+- ShipPilot exists to make shipping ShowPilot (a synchronized light-show platform) and its sibling repos easier. ShowPilot has a viewer side (audience-facing, no auth) and an admin side (password-protected); ShipPilot is admin-only by definition.
+- It runs in one LXC among several on Proxmox. The maintainer is iterative and tests risky changes before production; ShowPilot has a Docker test container for that, but for ShipPilot the LXC IS production (no separate test environment).
 
 ---
 
 ## Starting a new conversation in this project
 
-When Will starts a conversation about ShipPilot, you have:
+When a conversation about ShipPilot starts, you have:
 - This primer (you're reading it — it ships with the repo at `PRIMER.md`)
-- Possibly past conversation history if Will moved chats into the project
+- Possibly past conversation history, if earlier chats were moved into the project
 
 What you should do:
 
-1. **Read this primer.** Ask Will what he wants to work on.
+1. **Read this primer.** Ask what to work on.
 2. **Clone the repo.** It's public: `git clone https://github.com/ShowPilotFPP/ShipPilot.git /home/claude/shippilot`
 3. **Check the version in `package.json`** to confirm what release you're starting from.
-4. **For continuity on a specific issue,** search the conversation history if Will moved past chats into the project.
+4. **For continuity on a specific issue,** search the conversation history, if past chats were moved into the project.
 
-Don't reinvent decisions documented above. If you think a documented decision is wrong, raise it explicitly with Will rather than quietly changing course.
+Don't reinvent decisions documented above. If you think a documented decision is wrong, raise it explicitly rather than quietly changing course.

@@ -21,12 +21,17 @@ function build(auth, config) {
     limits: { fileSize: config.maxUploadBytes },
   });
 
-  r.post('/release', auth.requireAuth, upload.single('tarball'), async (req, res) => {
+  // Session OR API token (v0.4.0). Auth runs before multer, so an
+  // unauthenticated upload is rejected without being written to disk.
+  r.post('/release', auth.requireUploadAuth, upload.single('tarball'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'tarball field required' });
     const tarballPath = req.file.path;
     let result;
     try {
-      result = await performRelease(tarballPath, config);
+      result = await performRelease(tarballPath, config, {
+        allowedRepos: req.apiToken ? req.apiToken.allowedRepos : null,
+        releasedBy: req.releasedBy,
+      });
     } catch (e) {
       // performRelease shouldn't throw, but belt-and-braces.
       result = { ok: false, manifest: null, log: e.stack || e.message, error: e.message };
@@ -43,6 +48,7 @@ function build(auth, config) {
       status: result.ok ? 'success' : 'failed',
       error_message: result.error || null,
       log: result.log,
+      released_by: req.releasedBy || null,
     });
     const releaseId = releaseRow.lastInsertRowid;
 
@@ -109,8 +115,14 @@ function build(auth, config) {
   // Polling endpoint for async auto-deploy results. Returns the deploy
   // rows for the release. The UI polls until all rows have a non-running
   // status (i.e. finished_at is set).
-  r.get('/releases/:id/deploys', auth.requireAuth, (req, res) => {
+  // Also open to API tokens (v0.4.0) so an automated uploader can report the
+  // deploy outcome; a token limited to certain repos only sees their releases.
+  r.get('/releases/:id/deploys', auth.requireUploadAuth, (req, res) => {
     const releaseId = parseInt(req.params.id, 10);
+    if (req.apiToken && req.apiToken.allowedRepos.length) {
+      const rel = db.getReleaseRepo(releaseId);
+      if (!rel || !req.apiToken.allowedRepos.includes(rel.repo)) return res.status(404).json({ error: 'not found' });
+    }
     const deploys = db.listDeploysForRelease(releaseId);
     const allSettled = deploys.length > 0 && deploys.every(d => d.finished_at !== null);
     res.json({ deploys, allSettled });

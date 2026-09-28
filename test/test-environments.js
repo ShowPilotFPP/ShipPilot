@@ -26,8 +26,8 @@ console.log('PASS: slug');
 assert.strictEqual(HOST_RE.test(''), false);
 assert.strictEqual(HOST_RE.test('-foo'), false);
 assert.strictEqual(HOST_RE.test('host;rm'), false);
-assert.strictEqual(HOST_RE.test('192.168.1.230'), true);
-assert.strictEqual(HOST_RE.test('192.168.1.232'), true);
+assert.strictEqual(HOST_RE.test('192.0.2.10'), true);
+assert.strictEqual(HOST_RE.test('192.0.2.12'), true);
 assert.strictEqual(HOST_RE.test('demo.showpilot.dev'), true);
 console.log('PASS: host');
 

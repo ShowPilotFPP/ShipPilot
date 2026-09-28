@@ -16,6 +16,7 @@ const authRoutes = require('./routes/auth');
 const releaseRoutes = require('./routes/release');
 const reposRoutes = require('./routes/repos');
 const environmentsRoutes = require('./routes/environments');
+const tokensRoutes = require('./routes/tokens');
 
 const config = load();
 db.init(config.dbPath);
@@ -50,6 +51,9 @@ app.use('/api', reposRoutes.build(auth, config));
 
 // Environment management routes use JSON.
 app.use('/api', environmentsRoutes.build(auth, config));
+
+// API token management (v0.4.0) uses JSON; browser session only.
+app.use('/api', tokensRoutes.build(auth));
 
 // Static UI
 app.use('/', express.static(path.join(__dirname, 'public')));

@@ -75,7 +75,7 @@ module.exports = {
   // Git identity for commits made by this tool.
   gitAuthor: {
     name: 'ShipPilot',
-    email: 'shippilot@lightsondrake.org',
+    email: 'shippilot@example.com',
   },
 
   // ============================================================
