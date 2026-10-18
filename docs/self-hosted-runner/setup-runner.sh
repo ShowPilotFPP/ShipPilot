@@ -21,6 +21,7 @@ BASE="${RUNNER_BASE:-$HOME/actions-runners}"
 say() { echo; echo "== $*"; }
 die() { echo "setup-runner: $*" >&2; exit 1; }
 
+[ "$(uname -s)" = Linux ] || die "run this inside the Linux machine (e.g. after 'orb -m showpilot-runner'), not on macOS"
 [ "$(id -u)" != 0 ] || die "run as a normal user with sudo, not root (the runner refuses to run as root)"
 command -v sudo >/dev/null || die "sudo is required"
 case "$(uname -m)" in aarch64) RARCH=arm64 ;; x86_64) RARCH=x64 ;; *) die "unsupported CPU $(uname -m)" ;; esac
@@ -125,7 +126,9 @@ for REPO in "${REPOS[@]}"; do
 	fi
 	mkdir -p "$DIR"
 	tar -xzf "$PKG" -C "$DIR"
-	sudo "$DIR/bin/installdependencies.sh" >/dev/null
+	# Its "Unable to locate package libicuNN" lines are normal (it tries each
+	# version until one exists); only show its output if it actually fails.
+	if ! OUT="$(sudo "$DIR/bin/installdependencies.sh" 2>&1)"; then echo "$OUT"; die "runner dependency install failed"; fi
 	TOKEN="$(token_for "$REPO")"
 	[ -n "$TOKEN" ] || die "no registration token for $REPO"
 	(cd "$DIR" && ./config.sh --unattended --replace \

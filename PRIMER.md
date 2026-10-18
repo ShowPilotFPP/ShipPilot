@@ -117,7 +117,7 @@ ShipPilot can ship its own updates via its own UI. The flow:
 1. Claude packages a tarball at `/mnt/user-data/outputs/shippilot-vX.Y.Z.tar.gz`
 2. The maintainer downloads it and drops it into the ShipPilot UI (`<your-domain>/push`)
 3. The pipeline commits to GitHub, pushes the tag
-4. **The maintainer then has to manually pull and restart on the LXC**, because the running ShipPilot pushed the new code to GitHub but is still running the old version:
+4. **Since v0.5.0 ShipPilot then updates itself** (see "Self-update"): with "Update automatically after shipping a ShipPilot release" on (the default), it pulls, runs `npm install`, restarts through PM2, checks the new version answers, and rolls back if it doesn't. The page reloads on the new version. With it off, press **Update now** on the "ShipPilot updates" card. The manual way still works (and is what to use if the updater itself is broken):
    ```bash
    ssh root@<shippilot-host>
    cd /opt/shippilot && git pull origin main
@@ -125,7 +125,7 @@ ShipPilot can ship its own updates via its own UI. The flow:
    pm2 restart shippilot
    ```
 
-**Bootstrap problem:** if a ShipPilot release ships a bug bad enough to crash on startup, the running ShipPilot pushed it before crashing — but you can't use ShipPilot to fix it. Fall back to the manual flow: scp tarball, extract, restart. The release pipeline's rollback only protects against git-side failures, not application crashes after the new code is running.
+**Bootstrap problem:** a release that crashes on startup is now rolled back by the self-updater (previous commit, `npm install`, restart; status "Rolled back"), and the broken commit stays on GitHub, so ship a fixed version on top. Still fall back to the manual flow if the rollback also fails ("Update and rollback failed") or the updater itself is broken: `git log`/`git reset --hard <good sha>`, `npm install`, `pm2 restart shippilot`.
 
 ### Standard tarball packaging
 
@@ -267,7 +267,7 @@ The maintainer doesn't write code. They run commands you give them. So:
 
 ---
 
-## Recent state (as of v0.4.1, October 2026)
+## Recent state (as of v0.5.0, October 2026)
 
 | Version | Change |
 |---------|--------|
@@ -281,6 +281,8 @@ The maintainer doesn't write code. They run commands you give them. So:
 | 0.3.5 | Async auto-deploy. `POST /release` now responds immediately after the git push, then fires SSH deploys in the background via `setImmediate`. The UI polls `GET /releases/:id/deploys` every 5s, showing a "Deploying…" spinner until all envs settle. Fixes Cloudflare 524 errors when deploy scripts take longer than ~100s. `listDeploysForRelease` query updated to include env name/slug via JOIN. |
 | 0.4.0 | **API tokens for automated uploads** (see "API tokens and automated releases"): `POST /release` accepts a browser session OR `Authorization: Bearer shp_…`; tokens are managed in a new UI card (session-only routes `GET/POST/DELETE /api/tokens`), stored as SHA-256 hashes, shown once, optionally limited to repo slugs, revocable, with last-used time. Tokens can only upload releases and poll `GET /releases/:id/deploys` (limited tokens: their repos only). New `releases.released_by` column (auto-migrated) shown in history as "by user: …" / "by api token: …". `fetchAndReset` now fetches all tags (`--tags --force`) so the tag-collision preflight also sees tags created on GitHub. Example workflow in `docs/github-actions-release.example.yml`. Primer and repo sanitized (no personal names, domains or internal addresses; the config example, UI placeholder and tests use example values). Tested against a running copy upgraded from v0.3.5's database with a local bare repo as origin: history kept and migrated; session and token uploads succeed; a limited token is refused for another repo (nothing tagged); no auth / wrong token → 401 with no temp file written; tokens get 401 on tokens/repos/history/logs; deploy status 200 for own repo, 404 otherwise; a tag already on GitHub (on another branch) is caught at preflight; a commit merged on GitHub first is released on top of cleanly; revocation is immediate; only hashes stored. |
 | 0.4.1 | Docs only: **self-hosted build runner** (`docs/self-hosted-runner/`: `setup-runner.sh` + README; see "Self-hosted build runner"); the example workflow targets that runner with the `SPP_RUNNER=github` fallback. No server code changes. |
+| 0.4.2 | `setup-runner.sh` stops with a clear message when run on macOS instead of inside the Linux machine (before, it said "unsupported CPU arm64"). |
+| 0.5.0 | **Self-update** (see "Self-update"): after shipping a ShipPilot release, ShipPilot pulls, installs, restarts itself under PM2/systemd, checks `/api/health` for the new version and rolls back if it doesn't start; "ShipPilot updates" card (running version, Check for updates, Update now, automatic on/off, step log); new open `GET /api/health`; `settings` table. Header version now follows the running version. Runner setup hides the harmless `libicu` messages. | Under PM2 against a local stand-in origin: manual update 0.5.0→0.5.1; a release that throws on startup rolled back to the previous version after 90 s; shipping a ShipPilot tarball updated the running instance automatically; automatic off = no update; `/self-update/run` refuses without a session; the card driven in a headless browser (check, update, page reload on the new version). systemd path not run (no systemd in the test environment). `test/test-self-update.js`. |
 
 ---
 
@@ -308,6 +310,20 @@ The ShowPilot repos' build, test, Docker and ship jobs run on one self-hosted Gi
 - **Fallback:** repo variable `SPP_RUNNER` = `github` → GitHub-hosted runners for that repo. Unset and machine offline → jobs queue up to 24 h.
 - **Kept on GitHub-hosted runners on purpose:** the Claude workflows (driven by public issue/PR text; on a shared machine a prompt-injected run could read the other runners' registration files) and Player tests for pull requests from forks.
 - **Disk:** ~4-5 GB tools/runners; SD image build ~6-8 GB peak (cleaned up); Docker cache pruned weekly.
+
+---
+
+## Self-update (v0.5.0)
+
+Files: `lib/self-update.js` (in-process: detection, status, start), `scripts/self-update.js` (the helper; Node built-ins only), `routes/self-update.js`.
+
+- **Which repo is "self":** at startup ShipPilot reads its own clone's branch and `origin` (`git -C <app dir>`). A released repo slug is self when its row's `remote_original` or `remote_aliased` names the same `owner/repo` (any form, including the `git@github-<alias>:` SSH-config form; lowercase) and the same branch. Nothing to configure.
+- **Supervisor:** PM2 (env `pm_id` + `name`, restart = `pm2 restart <name>`) or systemd (env `INVOCATION_ID`, unit from `/proc/self/cgroup`, restart = `systemctl restart <unit>`). Anything else (plain `node server.js`, not a git clone, detached HEAD, no `origin`) → updating is off and the card says why.
+- **Running outside the process being restarted:** PM2 kills the process tree on restart, so the helper is started with `setsid --fork` (re-parented to init); systemd stops the whole unit's cgroup, so the helper runs as a transient unit (`systemd-run --unit shippilot-self-update-<ts> --collect`). Arguments go as base64 JSON; the helper prepends the running Node's folder to PATH (npm, pm2).
+- **Helper steps:** `git fetch origin <branch>`, `git merge --ff-only` (refuses local commits; tracked-file changes are refused before starting), nothing new → "Already up to date"; `npm install --omit=dev`; restart; wait up to 90 s for `GET /api/health` to report the new version from a process started after the restart. Fails → `git reset --hard <previous sha>`, `npm install`, restart, wait again → "Rolled back" (or "Update and rollback failed"). npm failure → reset + reinstall without restarting. Status (state, message, last 200 log lines) in `data/self-update.json`, full log appended to `data/self-update.log`. A status left "running" by a helper that died is shown as failed after 2 minutes.
+- **When:** after a successful release of self (`routes/release.js` → `maybeAutoUpdate`, 2 s later so the response reaches the browser), only with the `selfUpdate.auto` setting on (default on; `settings` table). Before launching, it waits (up to 15 min) for releases still being processed and deploys still running (`countRunningDeploys`, rows unfinished for over 30 min ignored), since the restart would cut them off. The release response carries `selfUpdate: 'starting'`; the page polls `/api/self-update` through the restart and reloads when the running version changes.
+- **API:** `GET /api/health` (open: `{ok, version, startedAt}`), `GET /api/self-update`, `POST /api/self-update/check` (fetch + commits behind + remote `package.json` version), `POST /api/self-update/run`, `PUT /api/self-update/settings {auto}`; all but health need a browser session (API tokens can't update or configure).
+- A version from before 0.5.0 has no `/api/health`; when rolling back to one, an answer from `/api/auth/state` counts as up.
 
 ---
 

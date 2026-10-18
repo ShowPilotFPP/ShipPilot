@@ -11,6 +11,7 @@ const os = require('os');
 const db = require('../lib/db');
 const { performRelease } = require('../lib/release');
 const deploy = require('../lib/deploy');
+const selfUpdate = require('../lib/self-update');
 
 function build(auth, config) {
   const r = express.Router();
@@ -27,6 +28,7 @@ function build(auth, config) {
     if (!req.file) return res.status(400).json({ error: 'tarball field required' });
     const tarballPath = req.file.path;
     let result;
+    selfUpdate.noteReleaseStart();
     try {
       result = await performRelease(tarballPath, config, {
         allowedRepos: req.apiToken ? req.apiToken.allowedRepos : null,
@@ -36,6 +38,7 @@ function build(auth, config) {
       // performRelease shouldn't throw, but belt-and-braces.
       result = { ok: false, manifest: null, log: e.stack || e.message, error: e.message };
     } finally {
+      selfUpdate.noteReleaseEnd();
       fs.unlink(tarballPath).catch(() => {});
     }
 
@@ -56,6 +59,10 @@ function build(auth, config) {
       return res.status(400).json({ ok: false, error: result.error, log: result.log });
     }
 
+    // v0.5.0: a release of ShipPilot itself updates the running ShipPilot
+    // (when automatic updates are on). It waits for any deploys below.
+    const selfUpdating = selfUpdate.maybeAutoUpdate(result.manifest.repo, req.releasedBy);
+
     // Check whether this repo has any auto-deploy environments. If none,
     // respond immediately with deploys: [] — no polling needed.
     const autoDeployEnvs = db.listEnvironmentsByRepo(result.manifest.repo, true);
@@ -68,6 +75,7 @@ function build(auth, config) {
         log: result.log,
         releaseId,
         deploys: [],
+        selfUpdate: selfUpdating ? 'starting' : null,
       });
     }
 
@@ -85,6 +93,7 @@ function build(auth, config) {
       log: result.log,
       releaseId,
       deploys: 'pending',
+      selfUpdate: selfUpdating ? 'starting' : null,
     });
 
     setImmediate(async () => {

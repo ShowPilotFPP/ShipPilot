@@ -174,7 +174,7 @@
   <header>
     <div>
       <h1>ShipPilot</h1>
-      <div class="version">v0.4.1</div>
+      <div class="version">v0.5.0</div>
     </div>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">🌙</button>
@@ -273,6 +273,23 @@
         <thead><tr><th>Name</th><th>Repos</th><th>Created</th><th>Last used</th><th></th></tr></thead>
         <tbody id="tokens-body"></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+        <h2 style="margin: 0;">ShipPilot updates</h2>
+        <div style="display: flex; gap: 8px;">
+          <button id="su-check-btn" class="secondary">Check for updates</button>
+          <button id="su-run-btn">Update now</button>
+        </div>
+      </div>
+      <div id="su-summary" style="color: var(--text-dim); font-size: 13px;"></div>
+      <label style="display: flex; align-items: center; gap: 8px; margin: 12px 0 0;">
+        <input id="su-auto" type="checkbox" style="width: auto;">
+        <span style="margin: 0;">Update automatically after shipping a ShipPilot release</span>
+      </label>
+      <div id="su-msg" style="margin-top: 12px;"></div>
+      <div id="su-log" class="log hidden" style="margin-top: 12px;"></div>
     </div>
 
     <div class="card">
@@ -534,6 +551,7 @@ async function bootstrap() {
     refreshEnvironments();
     refreshReleases();
     refreshTokens();
+    refreshSelfUpdate();
     return;
   }
 
@@ -571,6 +589,123 @@ async function doLogin() {
 async function doLogout() {
   await api('/auth/logout', { method: 'POST' });
   location.reload();
+}
+
+// ---- ShipPilot self-update (v0.5.0) ----
+const SU_STATES = {
+  starting: ['info', 'Starting…'],
+  running: ['info', 'Updating…'],
+  success: ['ok', 'Updated'],
+  current: ['ok', 'Already up to date'],
+  'rolled-back': ['warn', 'Rolled back'],
+  'rollback-failed': ['err', 'Update and rollback failed'],
+  failed: ['err', 'Update failed'],
+};
+let suWatching = false;
+
+function renderSelfUpdate(i) {
+  const parts = [`Running <strong>v${escapeHtml(i.version)}</strong>`];
+  if (i.repo) parts.push(`from ${escapeHtml(i.repo)} (${escapeHtml(i.branch || '?')})`);
+  if (i.supervisor) parts.push(`under ${escapeHtml(i.supervisor)}`);
+  if (i.check && !i.check.error) {
+    parts.push(i.check.behind
+      ? `<strong>v${escapeHtml(i.check.remoteVersion || '?')} available</strong> (${i.check.behind} commit${i.check.behind === 1 ? '' : 's'} behind)`
+      : 'up to date with GitHub');
+  }
+  $('su-summary').innerHTML = parts.join(' · ');
+  document.querySelector('header .version').textContent = `v${i.version}`;
+  $('su-auto').checked = !!i.auto;
+  $('su-auto').disabled = !i.supported;
+  const st = i.status;
+  const active = !!(st && (st.state === 'starting' || st.state === 'running')) || !!i.waiting;
+  $('su-run-btn').disabled = !i.supported || active;
+  $('su-check-btn').disabled = active;
+  if (!i.supported) {
+    setMsg($('su-msg'), 'warn', `Updating from here is off: ${i.reason}`);
+  } else if (i.check && i.check.error) {
+    setMsg($('su-msg'), 'err', i.check.error);
+  } else if (st) {
+    const [kind, label] = SU_STATES[st.state] || ['info', st.state];
+    const when = st.finishedAt || st.updatedAt || st.startedAt;
+    const waiting = i.waiting ? ` Waiting for ${i.waiting} to finish first.` : '';
+    setMsg($('su-msg'), kind, `${st.message || label}${waiting}${when && !active ? ` (${new Date(when).toLocaleString()})` : ''}`);
+  } else {
+    setMsg($('su-msg'), '', '');
+  }
+  // The step log while it runs and after anything but a clean result.
+  if (st && st.log && st.log.length && (active || !['success', 'current'].includes(st.state))) {
+    $('su-log').textContent = st.log.join('\n');
+    show($('su-log'));
+  } else {
+    hide($('su-log'));
+  }
+  return active;
+}
+
+async function refreshSelfUpdate() {
+  const r = await api('/self-update');
+  if (!r.ok || typeof r.body !== 'object') return null;
+  const active = renderSelfUpdate(r.body);
+  if (active) watchSelfUpdate();
+  return r.body;
+}
+
+// Polls while an update runs. ShipPilot restarts in the middle, so failed
+// requests are expected for a while; when the running version changes (or
+// the update ends), the page reloads to load the new UI.
+async function watchSelfUpdate() {
+  if (suWatching) return;
+  suWatching = true;
+  const firstVersion = (await api('/health').catch(() => ({}))).body?.version;
+  const t0 = Date.now();
+  const until = t0 + 10 * 60 * 1000;
+  let seenActive = false;
+  try {
+    while (Date.now() < until) {
+      await new Promise((res) => setTimeout(res, 3000));
+      let r;
+      try { r = await api('/self-update'); } catch { continue; } // restarting
+      if (!r.ok || typeof r.body !== 'object') continue;
+      const active = renderSelfUpdate(r.body);
+      if (active) { seenActive = true; continue; }
+      if (!seenActive && Date.now() - t0 < 20000 && r.body.version === firstVersion) continue; // not started yet
+      if (firstVersion && r.body.version !== firstVersion) { location.reload(); return; }
+      return;
+    }
+  } finally {
+    suWatching = false;
+  }
+}
+
+async function doSelfUpdateCheck() {
+  $('su-check-btn').disabled = true;
+  setMsg($('su-msg'), 'info', 'Checking GitHub…');
+  const r = await api('/self-update/check', { method: 'POST' });
+  if (r.ok) renderSelfUpdate(r.body);
+  else setMsg($('su-msg'), 'err', (r.body && r.body.error) || `Check failed (HTTP ${r.status})`);
+  $('su-check-btn').disabled = false;
+}
+
+async function doSelfUpdateRun() {
+  if (!confirm('Update ShipPilot now? It pulls the latest version from GitHub and restarts; if the new version doesn\'t start, the previous one is put back.')) return;
+  $('su-run-btn').disabled = true;
+  const r = await api('/self-update/run', { method: 'POST' });
+  if (!r.ok) {
+    setMsg($('su-msg'), 'err', (r.body && r.body.error) || `Could not start (HTTP ${r.status})`);
+    $('su-run-btn').disabled = false;
+    return;
+  }
+  setMsg($('su-msg'), 'info', 'Starting…');
+  watchSelfUpdate();
+}
+
+async function doSelfUpdateAuto() {
+  const r = await api('/self-update/settings', {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ auto: $('su-auto').checked }),
+  });
+  if (r.ok) renderSelfUpdate(r.body);
+  else setMsg($('su-msg'), 'err', (r.body && r.body.error) || 'Could not save');
 }
 
 // ---- File picker / drag-and-drop ----
@@ -623,6 +758,13 @@ async function doShip() {
   if (r.ok && r.body && typeof r.body === 'object') {
     setMsg($('ship-msg'), 'ok', `Shipped ${r.body.manifest.repo} v${r.body.manifest.version} — ${r.body.commitSha.slice(0,12)}`);
     setPicked(null); $('file').value = '';
+    if (r.body.selfUpdate === 'starting') {
+      const info = document.createElement('div');
+      info.className = 'msg info';
+      info.textContent = 'ShipPilot is updating itself to this release; this page reloads when it\'s back (see ShipPilot updates below).';
+      $('ship-msg').appendChild(info);
+      watchSelfUpdate();
+    }
     if (r.body.deploys === 'pending') {
       // Auto-deploys are running in the background. Show a spinner and
       // poll until all envs settle.
@@ -1429,6 +1571,9 @@ $('theme-toggle').onclick = toggleTheme;
 $('setup-btn').onclick = doSetup;
 $('login-btn').onclick = doLogin;
 $('ship-btn').onclick = doShip;
+$('su-check-btn').onclick = doSelfUpdateCheck;
+$('su-run-btn').onclick = doSelfUpdateRun;
+$('su-auto').onchange = doSelfUpdateAuto;
 wireDrop();
 [$('login-user'), $('login-pass')].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); }));
 [$('setup-user'), $('setup-pass')].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') doSetup(); }));

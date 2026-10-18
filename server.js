@@ -17,6 +17,8 @@ const releaseRoutes = require('./routes/release');
 const reposRoutes = require('./routes/repos');
 const environmentsRoutes = require('./routes/environments');
 const tokensRoutes = require('./routes/tokens');
+const selfUpdateRoutes = require('./routes/self-update');
+const selfUpdate = require('./lib/self-update');
 
 const config = load();
 db.init(config.dbPath);
@@ -26,6 +28,9 @@ const auth = makeAuth(config);
 // the UI can manage them. Existing DB rows are preserved (the migration
 // skips slugs that are already present).
 reposLib.migrateFromConfig(config);
+
+// Self-update (v0.5.0): learn which repo/branch this clone is.
+selfUpdate.init(config).catch((e) => console.error(`[self-update] init: ${e.message}`));
 
 const app = express();
 
@@ -54,6 +59,9 @@ app.use('/api', environmentsRoutes.build(auth, config));
 
 // API token management (v0.4.0) uses JSON; browser session only.
 app.use('/api', tokensRoutes.build(auth));
+
+// Self-update (v0.5.0): /api/health (open) and /api/self-update* (session only).
+app.use('/api', selfUpdateRoutes.build(auth));
 
 // Static UI
 app.use('/', express.static(path.join(__dirname, 'public')));
