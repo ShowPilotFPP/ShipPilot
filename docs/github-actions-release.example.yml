@@ -38,7 +38,9 @@ permissions:
 
 jobs:
   ship:
-    runs-on: ubuntu-latest
+    # Self-hosted build runner (labels self-hosted, linux, arm64, showpilot).
+    # Repo variable SPP_RUNNER=github switches back to GitHub-hosted runners.
+    runs-on: ${{ vars.SPP_RUNNER == 'github' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","arm64","showpilot"]') }}
     steps:
       - uses: actions/checkout@v4
 

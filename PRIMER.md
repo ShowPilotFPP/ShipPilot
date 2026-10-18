@@ -104,7 +104,7 @@ ShipPilot ONLY rewrites the managed block. The marker-based logic in `lib/ssh-co
 
 ### CI/CD
 - GitHub: `github.com/ShowPilotFPP/ShipPilot` (public as of v0.3.4)
-- No GitHub Actions. Releases are manual via tarball-into-itself.
+- No GitHub Actions of its own. Releases are manual via tarball-into-itself. `docs/` holds the example ship workflow and the self-hosted runner setup used by the ShowPilot repos.
 
 ---
 
@@ -267,7 +267,7 @@ The maintainer doesn't write code. They run commands you give them. So:
 
 ---
 
-## Recent state (as of v0.4.0, September 2026)
+## Recent state (as of v0.4.1, October 2026)
 
 | Version | Change |
 |---------|--------|
@@ -280,6 +280,7 @@ The maintainer doesn't write code. They run commands you give them. So:
 | 0.3.4 | Safe JSON parsing in `doShip`. `resp.json()` was called unconditionally — if NPM dropped the connection mid-response (e.g. during a ShowPilot auto-deploy that restarted a proxied service), the parse threw "not valid JSON" even though the release had already succeeded on GitHub. Now checks content-type first, falls back to text. A 2xx non-JSON response shows "Shipped — check release history to confirm" instead of crashing. Also: PRIMER.md added to repo. |
 | 0.3.5 | Async auto-deploy. `POST /release` now responds immediately after the git push, then fires SSH deploys in the background via `setImmediate`. The UI polls `GET /releases/:id/deploys` every 5s, showing a "Deploying…" spinner until all envs settle. Fixes Cloudflare 524 errors when deploy scripts take longer than ~100s. `listDeploysForRelease` query updated to include env name/slug via JOIN. |
 | 0.4.0 | **API tokens for automated uploads** (see "API tokens and automated releases"): `POST /release` accepts a browser session OR `Authorization: Bearer shp_…`; tokens are managed in a new UI card (session-only routes `GET/POST/DELETE /api/tokens`), stored as SHA-256 hashes, shown once, optionally limited to repo slugs, revocable, with last-used time. Tokens can only upload releases and poll `GET /releases/:id/deploys` (limited tokens: their repos only). New `releases.released_by` column (auto-migrated) shown in history as "by user: …" / "by api token: …". `fetchAndReset` now fetches all tags (`--tags --force`) so the tag-collision preflight also sees tags created on GitHub. Example workflow in `docs/github-actions-release.example.yml`. Primer and repo sanitized (no personal names, domains or internal addresses; the config example, UI placeholder and tests use example values). Tested against a running copy upgraded from v0.3.5's database with a local bare repo as origin: history kept and migrated; session and token uploads succeed; a limited token is refused for another repo (nothing tagged); no auth / wrong token → 401 with no temp file written; tokens get 401 on tokens/repos/history/logs; deploy status 200 for own repo, 404 otherwise; a tag already on GitHub (on another branch) is caught at preflight; a commit merged on GitHub first is released on top of cleanly; revocation is immediate; only hashes stored. |
+| 0.4.1 | Docs only: **self-hosted build runner** (`docs/self-hosted-runner/`: `setup-runner.sh` + README; see "Self-hosted build runner"); the example workflow targets that runner with the `SPP_RUNNER=github` fallback. No server code changes. |
 
 ---
 
@@ -293,7 +294,20 @@ The maintainer doesn't write code. They run commands you give them. So:
 - **Audit:** every release records `released_by` ("user: <name>" or "api token: <name>"), shown under the message in Recent releases and logged in the release log.
 - **Mixed flows are safe:** before applying a tarball, the clone is synced to `origin/<branch>` (fetch, reset --hard, clean) and all tags are fetched, so commits merged on GitHub directly (e.g. a PR) are simply built upon, and a tag that already exists on GitHub is caught at preflight. A tarball identical to the current branch is refused ("no changes"), so automation must ship a branch other than the target (see the example workflow).
 - **Example workflow:** `docs/github-actions-release.example.yml` (manual `workflow_dispatch` on a chosen branch → packages with `git archive` + `.release.json` from `package.json` → uploads with the token → fails the job if ShipPilot refuses). Secrets: `SHIPPILOT_URL`, `SHIPPILOT_TOKEN`, `SHIPPILOT_REPO`.
+- **Example workflow runner (v0.4.1):** the example's job uses `runs-on: ${{ vars.SPP_RUNNER == 'github' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","arm64","showpilot"]') }}` like the ShowPilot repos; set the repo variable `SPP_RUNNER` to `github` to use GitHub-hosted runners.
 - **Exposure note:** a token is as powerful as a release upload, which includes auto-deploys. Limit tokens to the repos that need them, store them only as CI secrets, and revoke any token that may have leaked.
+
+---
+
+## Self-hosted build runner (v0.4.1)
+
+The ShowPilot repos' build, test, Docker and ship jobs run on one self-hosted GitHub Actions runner (labels `self-hosted, linux, arm64, showpilot`). Kept here because it serves every repo ShipPilot ships. Files: `docs/self-hosted-runner/setup-runner.sh`, `docs/self-hosted-runner/README.md`.
+
+- **Reference machine:** an Ubuntu 24.04 machine in OrbStack on an Apple Silicon Mac (arm64, so ShowPilot Player SD images build natively). Any Ubuntu box works; on x86_64 the arm64 parts are emulated.
+- **`setup-runner.sh`** (run as a normal sudo user inside the machine; re-runnable): apt tools (git, curl, jq, python3, zip, xz, sfdisk, e2fsprogs, mpv/php-cgi/ffmpeg for Player tests), GitHub CLI, Node 22, Docker; a weekly cron prune (`/etc/cron.weekly/showpilot-runner-cleanup`: Docker images/cache older than a week, `/var/tmp/spp-image`); a **loop-device self-test** (ext4 image mounted through `losetup`) because the SD image build needs it — if it fails, use a full VM (UTM). Then one runner per repo (default ShowPilot, ShowPilot-Lite, ShowPilot-plugin, ShowPilot-Player) in `~/actions-runners/<repo>`, label `showpilot`, installed as a systemd service. Registration tokens come from `gh api .../actions/runners/registration-token` (it runs `gh auth login` if needed and **logs out again** so jobs can't read an owner login), or are typed in. Re-runs drop the local registration and use `--replace`. `--status` lists the services.
+- **Fallback:** repo variable `SPP_RUNNER` = `github` → GitHub-hosted runners for that repo. Unset and machine offline → jobs queue up to 24 h.
+- **Kept on GitHub-hosted runners on purpose:** the Claude workflows (driven by public issue/PR text; on a shared machine a prompt-injected run could read the other runners' registration files) and Player tests for pull requests from forks.
+- **Disk:** ~4-5 GB tools/runners; SD image build ~6-8 GB peak (cleaned up); Docker cache pruned weekly.
 
 ---
 
