@@ -78,6 +78,13 @@ module.exports = {
     email: 'shippilot@example.com',
   },
 
+  // Contributor credit (v0.5.1): when a release names a contributor (the
+  // `author` field in .release.json, or the first non-AI Co-authored-by line
+  // in the commit message), they become the commit AUTHOR and gitAuthor
+  // stays the committer, so GitHub's Contributors list counts them.
+  // false = always commit as gitAuthor (old behaviour).
+  creditContributors: true,
+
   // ============================================================
   // Auth secret — auto-generated on first start
   // ============================================================

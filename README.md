@@ -22,6 +22,7 @@ Fields:
 - `version` — semver. Cross-checked against `package.json` if present.
 - `commit_message` — used as-is for the commit
 - `tag` — optional; omit for an untagged commit
+- `author` — optional; `"Name <email>"` or `{"name", "email"}`. Makes that person the commit author (ShipPilot stays the committer). Without it, the first `Co-authored-by:` line in `commit_message` that isn't an AI assistant or ShipPilot itself becomes the author, and that line is removed from the message. GitHub's Contributors list only counts commit authors, so this is what credits contributors there. Set `creditContributors: false` in `config.js` to always commit as ShipPilot.
 
 ## Install (Ubuntu 24.04 LXC)
 
